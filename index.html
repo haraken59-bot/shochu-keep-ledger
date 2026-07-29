@@ -31,10 +31,6 @@
           <span>現在キープ中</span>
           <strong id="active-count">0</strong><small>本</small>
         </article>
-        <article class="summary-card warning">
-          <span>期限が近い</span>
-          <strong id="expiring-count">0</strong><small>本</small>
-        </article>
       </section>
 
       <section class="bottles-section" aria-labelledby="bottles-title">
@@ -43,14 +39,17 @@
             <p class="eyebrow">BOTTLES</p>
             <h2 id="bottles-title">キープ中のボトル</h2>
           </div>
-          <label class="sort-control">
-            <span class="sr-only">並び替え</span>
-            <select id="sort-select">
-              <option value="expiry">期限が近い順</option>
-              <option value="remaining">残量が少ない順</option>
-              <option value="newest">開始日が新しい順</option>
-            </select>
-          </label>
+          <div class="list-actions">
+            <button id="open-history-picker" class="history-picker-button" type="button">店舗履歴</button>
+            <label class="sort-control">
+              <span class="sr-only">並び替え</span>
+              <select id="sort-select">
+                <option value="visited">前回の来店が古い順</option>
+                <option value="remaining">残量が少ない順</option>
+                <option value="newest">開始日が新しい順</option>
+              </select>
+            </label>
+          </div>
         </div>
         <div id="bottle-list" class="bottle-list"></div>
         <div id="empty-state" class="empty-state" hidden>
@@ -61,7 +60,32 @@
       </section>
     </main>
 
-    <button id="add-button" class="fab" type="button" aria-label="ボトルを追加">＋</button>
+    <button id="add-button" class="fab" type="button" aria-label="追加メニューを開く">＋</button>
+
+    <dialog id="add-menu-dialog" class="sheet add-menu-sheet">
+      <section class="sheet-content" aria-labelledby="add-menu-title">
+        <div class="sheet-handle" aria-hidden="true"></div>
+        <div class="sheet-heading">
+          <div>
+            <p class="eyebrow">ADD BOTTLE</p>
+            <h2 id="add-menu-title">キープを追加</h2>
+          </div>
+          <button class="icon-button close-dialog" type="button" aria-label="閉じる">×</button>
+        </div>
+        <button id="open-current-add" class="add-menu-button" type="button">
+          <span>現在キープ中のボトル</span>
+          <small>残量・最終来店日も記録します</small>
+        </button>
+        <button id="open-past-add" class="add-menu-button" type="button">
+          <span>過去のキープ履歴</span>
+          <small>店名・銘柄・キープ日のみを記録します</small>
+        </button>
+        <button id="open-label-manager" class="add-menu-button" type="button">
+          <span>ラベル画像を登録</span>
+          <small>銘柄ごとに、ボトルカードの画像を設定します</small>
+        </button>
+      </section>
+    </dialog>
 
     <dialog id="bottle-dialog" class="sheet">
       <form id="bottle-form" method="dialog" class="sheet-content">
@@ -76,31 +100,26 @@
 
         <label>
           <span>お店の名前 <b>必須</b></span>
-          <input id="store" name="store" type="text" placeholder="例：やきとり日高" required maxlength="40" />
+          <select id="store-select" name="storeSelect" required></select>
+          <input id="store-new" class="store-new" name="storeNew" type="text" placeholder="新しい店名を入力" maxlength="40" hidden />
         </label>
         <label>
           <span>焼酎の銘柄 <b>必須</b></span>
           <select id="name-select" name="nameSelect" required></select>
           <input id="name-new" class="brand-new" name="nameNew" type="text" placeholder="新しい銘柄を入力" maxlength="40" hidden />
         </label>
-        <div class="form-grid">
-          <label>
-            <span>容量（ml）</span>
-            <input id="volume" name="volume" type="number" min="1" value="900" inputmode="numeric" />
-          </label>
-          <label>
-            <span>残量（%）</span>
-            <input id="remaining" name="remaining" type="number" min="0" max="100" value="100" inputmode="numeric" />
-          </label>
-        </div>
+        <label>
+          <span>残量（%）</span>
+          <input id="remaining" name="remaining" type="number" min="0" max="100" value="100" inputmode="numeric" />
+        </label>
         <div class="form-grid">
           <label>
             <span>キープ開始日</span>
             <input id="started-at" name="startedAt" type="date" required />
           </label>
           <label>
-            <span>期限</span>
-            <input id="expires-at" name="expiresAt" type="date" required />
+            <span>最終来店日</span>
+            <input id="last-visited-at" name="lastVisitedAt" type="date" required />
           </label>
         </div>
         <label>
@@ -108,6 +127,58 @@
           <textarea id="notes" name="notes" rows="3" placeholder="例：水代 220円"></textarea>
         </label>
         <button class="primary-button" type="submit">保存する</button>
+      </form>
+    </dialog>
+
+    <dialog id="past-bottle-dialog" class="sheet">
+      <form id="past-bottle-form" method="dialog" class="sheet-content">
+        <div class="sheet-handle" aria-hidden="true"></div>
+        <div class="sheet-heading">
+          <div>
+            <p class="eyebrow">PAST BOTTLE</p>
+            <h2>過去のキープを追加</h2>
+          </div>
+          <button class="icon-button close-dialog" type="button" aria-label="閉じる">×</button>
+        </div>
+        <p class="past-form-description">入力した履歴はメイン一覧には表示されず、店ごとのキープ履歴に残ります。</p>
+        <label>
+          <span>お店の名前 <b>必須</b></span>
+          <select id="past-store-select" name="pastStoreSelect" required></select>
+          <input id="past-store-new" class="store-new" name="pastStoreNew" type="text" placeholder="新しい店名を入力" maxlength="40" hidden />
+        </label>
+        <label>
+          <span>焼酎の銘柄 <b>必須</b></span>
+          <select id="past-name-select" name="pastNameSelect" required></select>
+          <input id="past-name-new" class="brand-new" name="pastNameNew" type="text" placeholder="新しい銘柄を入力" maxlength="40" hidden />
+        </label>
+        <label>
+          <span>キープ日 <b>必須</b></span>
+          <input id="past-started-at" name="pastStartedAt" type="date" required />
+        </label>
+        <button class="primary-button" type="submit">履歴を保存する</button>
+      </form>
+    </dialog>
+
+    <dialog id="label-manager-dialog" class="sheet">
+      <form id="label-manager-form" method="dialog" class="sheet-content">
+        <div class="sheet-handle" aria-hidden="true"></div>
+        <div class="sheet-heading">
+          <div>
+            <p class="eyebrow">BOTTLE LABEL</p>
+            <h2>ラベル画像を登録</h2>
+          </div>
+          <button class="icon-button close-dialog" type="button" aria-label="閉じる">×</button>
+        </div>
+        <p class="past-form-description">スマホで撮影したラベル写真や商品画像を選ぶと、同じ銘柄のカードに表示されます。</p>
+        <label>
+          <span>焼酎の銘柄 <b>必須</b></span>
+          <select id="label-brand-select" name="labelBrand" required></select>
+        </label>
+        <label>
+          <span>ラベル画像 <b>必須</b></span>
+          <input id="label-image-file" name="labelImage" type="file" accept="image/*" required />
+        </label>
+        <button class="primary-button" type="submit">ラベルを保存する</button>
       </form>
     </dialog>
 
@@ -121,8 +192,6 @@
           </div>
           <button class="icon-button close-dialog" type="button" aria-label="閉じる">×</button>
         </div>
-        <p id="detail-volume" class="volume-label"></p>
-
         <section class="remaining-panel" aria-label="残量の調整">
           <div class="remaining-title"><span>残量</span><strong id="detail-remaining"></strong></div>
           <div class="progress-track"><span id="detail-progress"></span></div>
@@ -135,21 +204,83 @@
 
         <dl class="detail-list">
           <div><dt>キープ開始日</dt><dd id="detail-started"></dd></div>
-          <div><dt>期限</dt><dd><span id="detail-expires"></span><small id="detail-days"></small></dd></div>
+          <div><dt>最終来店日</dt><dd><span id="detail-last-visited"></span><small id="detail-days"></small></dd></div>
           <div id="detail-notes-row"><dt>メモ</dt><dd id="detail-notes"></dd></div>
         </dl>
+        <button id="visit-today-button" class="secondary-button" type="button">今日来店した</button>
         <button id="delete-button" class="text-button" type="button">このボトルを削除</button>
       </section>
+    </dialog>
+
+    <dialog id="store-history-dialog" class="sheet detail-sheet">
+      <section class="sheet-content" aria-labelledby="store-history-title">
+        <div class="sheet-handle" aria-hidden="true"></div>
+        <div class="sheet-heading">
+          <div>
+            <p id="history-store" class="eyebrow"></p>
+            <h2 id="store-history-title">キープ履歴</h2>
+          </div>
+          <button class="icon-button close-dialog" type="button" aria-label="閉じる">×</button>
+        </div>
+        <p class="history-description">キープを入れた順に表示しています。</p>
+        <div id="history-list" class="history-list"></div>
+      </section>
+    </dialog>
+
+    <dialog id="history-store-picker-dialog" class="sheet">
+      <form id="history-store-picker-form" method="dialog" class="sheet-content">
+        <div class="sheet-handle" aria-hidden="true"></div>
+        <div class="sheet-heading">
+          <div>
+            <p class="eyebrow">STORE HISTORY</p>
+            <h2>店舗履歴を見る</h2>
+          </div>
+          <button class="icon-button close-dialog" type="button" aria-label="閉じる">×</button>
+        </div>
+        <label>
+          <span>お店の名前 <b>必須</b></span>
+          <select id="history-store-picker" name="historyStore" required></select>
+        </label>
+        <button class="primary-button" type="submit">履歴を表示する</button>
+      </form>
+    </dialog>
+
+    <dialog id="history-edit-dialog" class="sheet">
+      <form id="history-edit-form" method="dialog" class="sheet-content">
+        <div class="sheet-handle" aria-hidden="true"></div>
+        <div class="sheet-heading">
+          <div>
+            <p class="eyebrow">EDIT HISTORY</p>
+            <h2>キープ履歴を編集</h2>
+          </div>
+          <button class="icon-button close-dialog" type="button" aria-label="閉じる">×</button>
+        </div>
+        <label>
+          <span>お店の名前 <b>必須</b></span>
+          <select id="history-edit-store-select" name="historyEditStoreSelect" required></select>
+          <input id="history-edit-store-new" class="store-new" name="historyEditStoreNew" type="text" placeholder="新しい店名を入力" maxlength="40" hidden />
+        </label>
+        <label>
+          <span>焼酎の銘柄 <b>必須</b></span>
+          <select id="history-edit-name-select" name="historyEditNameSelect" required></select>
+          <input id="history-edit-name-new" class="brand-new" name="historyEditNameNew" type="text" placeholder="新しい銘柄を入力" maxlength="40" hidden />
+        </label>
+        <label>
+          <span>キープ日 <b>必須</b></span>
+          <input id="history-edit-started-at" name="historyEditStartedAt" type="date" required />
+        </label>
+        <button class="primary-button" type="submit">変更を保存する</button>
+      </form>
     </dialog>
 
     <template id="bottle-card-template">
       <article class="bottle-card">
         <button class="card-button" type="button">
-          <div class="bottle-icon" aria-hidden="true"><span></span></div>
+          <div class="bottle-icon" aria-hidden="true"><img class="bottle-label" alt="" hidden /><span></span></div>
           <div class="card-main">
             <p class="store-name"></p>
             <h3 class="bottle-name"></h3>
-            <p class="expiry-label"></p>
+            <p class="bottle-meta"><span class="keep-count"></span><span class="visit-label"></span></p>
           </div>
           <div class="card-amount">
             <strong></strong>
