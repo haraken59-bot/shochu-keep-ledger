@@ -17,6 +17,8 @@ const els = {
   add: document.querySelector("#add-button"),
   form: document.querySelector("#bottle-form"),
   formDialog: document.querySelector("#bottle-dialog"),
+  nameSelect: document.querySelector("#name-select"),
+  newName: document.querySelector("#name-new"),
   detailDialog: document.querySelector("#detail-dialog"),
   detailStore: document.querySelector("#detail-store"),
   detailName: document.querySelector("#detail-name"),
@@ -144,22 +146,46 @@ function setDefaultDates() {
   els.form.elements.expiresAt.value = toInput(end);
 }
 
+function renderBrandOptions() {
+  const brands = [...new Set(bottles.map((bottle) => bottle.name.trim()).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b, "ja"));
+  els.nameSelect.replaceChildren(new Option("銘柄を選択してください", ""));
+  els.nameSelect.options[0].disabled = true;
+  brands.forEach((brand) => els.nameSelect.add(new Option(brand, brand)));
+  els.nameSelect.add(new Option("＋ 新しい銘柄を入力", "__new__"));
+}
+
+function setBrandInputMode() {
+  const isNewBrand = els.nameSelect.value === "__new__";
+  els.newName.hidden = !isNewBrand;
+  els.newName.required = isNewBrand;
+  if (!isNewBrand) els.newName.value = "";
+  if (isNewBrand) requestAnimationFrame(() => els.newName.focus());
+}
+
 els.add.addEventListener("click", () => {
   els.form.reset();
+  renderBrandOptions();
+  setBrandInputMode();
   els.form.elements.volume.value = 900;
   els.form.elements.remaining.value = 100;
   setDefaultDates();
   els.formDialog.showModal();
 });
 
+els.nameSelect.addEventListener("change", setBrandInputMode);
+
 els.form.addEventListener("submit", (event) => {
   event.preventDefault();
   if (!els.form.reportValidity()) return;
   const formData = new FormData(els.form);
+  const name = formData.get("nameSelect") === "__new__"
+    ? formData.get("nameNew").trim()
+    : formData.get("nameSelect");
   bottles.unshift({
     id: crypto.randomUUID(),
     store: formData.get("store").trim(),
-    name: formData.get("name").trim(),
+    name,
     volume: Number(formData.get("volume")) || 900,
     remaining: Math.min(100, Math.max(0, Number(formData.get("remaining")))),
     startedAt: formData.get("startedAt"),
