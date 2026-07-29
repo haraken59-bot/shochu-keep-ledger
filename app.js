@@ -268,8 +268,8 @@ function openHistoryEdit(id) {
   els.historyDialog.close();
   els.historyEditForm.reset();
   renderStoreOptions();
-  renderBrandOptions();
   els.historyEditStoreSelect.value = bottle.store;
+  renderBrandOptions();
   els.historyEditNameSelect.value = bottle.name;
   setInputMode(els.historyEditStoreSelect, els.historyEditNewStore);
   setInputMode(els.historyEditNameSelect, els.historyEditNewName);
@@ -314,11 +314,11 @@ function updateDetailRemaining(value, persist = true) {
   }
 }
 
-function renderOptions(select, values, placeholder, newLabel) {
+function renderOptions(select, values, placeholder, newLabel, formatLabel = (value) => value) {
   select.replaceChildren(new Option(placeholder, ""));
   select.options[0].disabled = true;
-  values.forEach((value) => select.add(new Option(value, value)));
   select.add(new Option(newLabel, "__new__"));
+  values.forEach((value) => select.add(new Option(formatLabel(value), value)));
 }
 
 function renderStoreOptions() {
@@ -329,12 +329,34 @@ function renderStoreOptions() {
   renderOptions(els.historyEditStoreSelect, stores, "店名を選択してください", "＋ 新しい店名を入力");
 }
 
-function renderBrandOptions() {
+function selectedStore(select, newInput) {
+  return select.value === "__new__" ? newInput.value.trim() : select.value;
+}
+
+function renderBrandOptionsFor(select, store, excludeId = null) {
   const brands = [...new Set(bottles.map((bottle) => bottle.name.trim()).filter(Boolean))]
     .sort((a, b) => a.localeCompare(b, "ja"));
-  renderOptions(els.nameSelect, brands, "銘柄を選択してください", "＋ 新しい銘柄を入力");
-  renderOptions(els.pastNameSelect, brands, "銘柄を選択してください", "＋ 新しい銘柄を入力");
-  renderOptions(els.historyEditNameSelect, brands, "銘柄を選択してください", "＋ 新しい銘柄を入力");
+  const previousValue = select.value;
+  renderOptions(select, brands, "銘柄を選択してください", "＋ 新しい銘柄を入力", (brand) => {
+    if (!store) return brand;
+    const count = bottles.filter((bottle) => (
+      bottle.id !== excludeId && bottle.store === store && bottle.name === brand
+    )).length;
+    return `${brand}（今回で${count + 1}回目）`;
+  });
+  if ([...select.options].some((option) => option.value === previousValue)) {
+    select.value = previousValue;
+  }
+}
+
+function renderBrandOptions() {
+  renderBrandOptionsFor(els.nameSelect, selectedStore(els.storeSelect, els.newStore));
+  renderBrandOptionsFor(els.pastNameSelect, selectedStore(els.pastStoreSelect, els.pastNewStore));
+  renderBrandOptionsFor(
+    els.historyEditNameSelect,
+    selectedStore(els.historyEditStoreSelect, els.historyEditNewStore),
+    editingHistoryId,
+  );
 }
 
 function renderLabelOptions() {
@@ -430,12 +452,38 @@ els.openLabelManager.addEventListener("click", () => {
   els.labelManagerDialog.showModal();
 });
 
-els.storeSelect.addEventListener("change", () => setInputMode(els.storeSelect, els.newStore));
+els.storeSelect.addEventListener("change", () => {
+  setInputMode(els.storeSelect, els.newStore);
+  renderBrandOptionsFor(els.nameSelect, selectedStore(els.storeSelect, els.newStore));
+});
 els.nameSelect.addEventListener("change", () => setInputMode(els.nameSelect, els.newName));
-els.pastStoreSelect.addEventListener("change", () => setInputMode(els.pastStoreSelect, els.pastNewStore));
+els.newStore.addEventListener("input", () => {
+  renderBrandOptionsFor(els.nameSelect, selectedStore(els.storeSelect, els.newStore));
+});
+els.pastStoreSelect.addEventListener("change", () => {
+  setInputMode(els.pastStoreSelect, els.pastNewStore);
+  renderBrandOptionsFor(els.pastNameSelect, selectedStore(els.pastStoreSelect, els.pastNewStore));
+});
 els.pastNameSelect.addEventListener("change", () => setInputMode(els.pastNameSelect, els.pastNewName));
-els.historyEditStoreSelect.addEventListener("change", () => setInputMode(els.historyEditStoreSelect, els.historyEditNewStore));
+els.pastNewStore.addEventListener("input", () => {
+  renderBrandOptionsFor(els.pastNameSelect, selectedStore(els.pastStoreSelect, els.pastNewStore));
+});
+els.historyEditStoreSelect.addEventListener("change", () => {
+  setInputMode(els.historyEditStoreSelect, els.historyEditNewStore);
+  renderBrandOptionsFor(
+    els.historyEditNameSelect,
+    selectedStore(els.historyEditStoreSelect, els.historyEditNewStore),
+    editingHistoryId,
+  );
+});
 els.historyEditNameSelect.addEventListener("change", () => setInputMode(els.historyEditNameSelect, els.historyEditNewName));
+els.historyEditNewStore.addEventListener("input", () => {
+  renderBrandOptionsFor(
+    els.historyEditNameSelect,
+    selectedStore(els.historyEditStoreSelect, els.historyEditNewStore),
+    editingHistoryId,
+  );
+});
 
 els.form.addEventListener("submit", (event) => {
   event.preventDefault();
