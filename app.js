@@ -231,10 +231,34 @@ function sortedBottles() {
   });
 }
 
+function sortedStores() {
+  const sort = els.sort.value;
+  const stores = [...new Set(bottles.map((bottle) => bottle.store.trim()).filter(Boolean))];
+  const sortValue = (store) => {
+    const storeBottles = bottles.filter((bottle) => bottle.store === store);
+    const activeStoreBottles = storeBottles.filter(isActive);
+    if (sort === "remaining") {
+      return activeStoreBottles.length
+        ? Math.min(...activeStoreBottles.map((bottle) => bottle.remaining))
+        : Number.POSITIVE_INFINITY;
+    }
+    if (sort === "newest") {
+      return activeStoreBottles.length
+        ? Math.max(...activeStoreBottles.map((bottle) => new Date(bottle.startedAt).getTime()))
+        : Number.NEGATIVE_INFINITY;
+    }
+    return Math.max(...storeBottles.map((bottle) => new Date(bottle.lastVisitedAt).getTime()));
+  };
+
+  return stores.sort((a, b) => {
+    const difference = sort === "newest" ? sortValue(b) - sortValue(a) : sortValue(a) - sortValue(b);
+    return difference || a.localeCompare(b, "ja");
+  });
+}
+
 function render() {
   const activeBottles = sortedBottles().filter(isActive);
-  const stores = [...new Set(bottles.map((bottle) => bottle.store.trim()).filter(Boolean))]
-    .sort((a, b) => a.localeCompare(b, "ja"));
+  const stores = sortedStores();
   els.activeCount.textContent = activeBottles.length;
   els.list.replaceChildren();
   els.empty.hidden = stores.length > 0;
