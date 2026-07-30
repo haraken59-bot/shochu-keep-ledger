@@ -1,5 +1,6 @@
 const STORAGE_KEY = "shochu-keep-ledger-v1";
 const LABELS_KEY = "shochu-keep-ledger-label-images-v1";
+const STORE_LOCATIONS_KEY = "shochu-keep-ledger-store-locations-v1";
 const DAY = 24 * 60 * 60 * 1000;
 
 const demoBottles = [
@@ -15,7 +16,6 @@ const els = {
   empty: document.querySelector("#empty-state"),
   template: document.querySelector("#bottle-card-template"),
   sort: document.querySelector("#sort-select"),
-  openHistoryPicker: document.querySelector("#open-history-picker"),
   add: document.querySelector("#add-button"),
   addMenuDialog: document.querySelector("#add-menu-dialog"),
   openCurrentAdd: document.querySelector("#open-current-add"),
@@ -25,6 +25,8 @@ const els = {
   formDialog: document.querySelector("#bottle-dialog"),
   storeSelect: document.querySelector("#store-select"),
   newStore: document.querySelector("#store-new"),
+  findNearbyStore: document.querySelector("#find-nearby-store"),
+  nearbyStoreStatus: document.querySelector("#nearby-store-status"),
   nameSelect: document.querySelector("#name-select"),
   newName: document.querySelector("#name-new"),
   pastForm: document.querySelector("#past-bottle-form"),
@@ -54,9 +56,8 @@ const els = {
   historyDialog: document.querySelector("#store-history-dialog"),
   historyStore: document.querySelector("#history-store"),
   historyList: document.querySelector("#history-list"),
-  historyPickerDialog: document.querySelector("#history-store-picker-dialog"),
-  historyPickerForm: document.querySelector("#history-store-picker-form"),
-  historyPicker: document.querySelector("#history-store-picker"),
+  saveStoreLocation: document.querySelector("#save-store-location"),
+  historyLocationStatus: document.querySelector("#history-location-status"),
   historyEditDialog: document.querySelector("#history-edit-dialog"),
   historyEditForm: document.querySelector("#history-edit-form"),
   historyEditStoreSelect: document.querySelector("#history-edit-store-select"),
@@ -67,6 +68,7 @@ const els = {
 
 let bottles = normalizeBottles(loadBottles());
 let labelImages = loadLabelImages();
+let storeLocations = loadStoreLocations();
 let selectedId = null;
 let editingHistoryId = null;
 renumberKeeps();
@@ -103,6 +105,67 @@ function loadLabelImages() {
 
 function saveLabelImages() {
   localStorage.setItem(LABELS_KEY, JSON.stringify(labelImages));
+}
+
+function loadStoreLocations() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORE_LOCATIONS_KEY));
+    return saved && typeof saved === "object" ? saved : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveStoreLocations() {
+  localStorage.setItem(STORE_LOCATIONS_KEY, JSON.stringify(storeLocations));
+}
+
+function requestCurrentPosition() {
+  return new Promise((resolve, reject) => {
+    if (!("geolocation" in navigator)) {
+      reject(new Error("この端末では位置情報を利用できません。"));
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      ({ coords }) => resolve({
+        latitude: coords.latitude,
+        longitude: coords.longitude,
+        accuracy: coords.accuracy,
+      }),
+      (error) => {
+        if (error.code === 1) {
+          reject(new Error("ブラウザの設定で位置情報の利用を許可してください。"));
+        } else if (error.code === 3) {
+          reject(new Error("位置情報を取得できませんでした。もう一度お試しください。"));
+        } else {
+          reject(new Error("現在地を確認できませんでした。"));
+        }
+      },
+      { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 },
+    );
+  });
+}
+
+function distanceInMeters(from, to) {
+  const radius = 6371000;
+  const toRadians = (degrees) => degrees * Math.PI / 180;
+  const latitudeDifference = toRadians(to.latitude - from.latitude);
+  const longitudeDifference = toRadians(to.longitude - from.longitude);
+  const fromLatitude = toRadians(from.latitude);
+  const toLatitude = toRadians(to.latitude);
+  const value = Math.sin(latitudeDifference / 2) ** 2
+    + Math.cos(fromLatitude) * Math.cos(toLatitude) * Math.sin(longitudeDifference / 2) ** 2;
+  return radius * 2 * Math.atan2(Math.sqrt(value), Math.sqrt(1 - value));
+}
+
+function formatDistance(meters) {
+  if (meters < 1000) return `${Math.max(1, Math.round(meters))}m`;
+  return `${(meters / 1000).toFixed(1)}km`;
+}
+
+function setLocationStatus(element, message, isError = false) {
+  element.textContent = message;
+  element.classList.toggle("is-error", isError);
 }
 
 function getStoreBrandKey(store, name) {
@@ -145,6 +208,16 @@ function visitText(bottle) {
   return days === 0 ? "今日来店" : `前回の来店から ${days}日`;
 }
 
+function storeVisitText(store) {
+  const latestVisit = bottles
+    .filter((bottle) => bottle.store === store)
+    .reduce((latest, bottle) => (
+      !latest || new Date(bottle.lastVisitedAt) > new Date(latest) ? bottle.lastVisitedAt : latest
+    ), "");
+  const days = getDaysSince(latestVisit);
+  return days === 0 ? "本日来店" : `最終来店から${days}日`;
+}
+
 function isActive(bottle) {
   return bottle.remaining > 0;
 }
@@ -160,28 +233,37 @@ function sortedBottles() {
 
 function render() {
   const activeBottles = sortedBottles().filter(isActive);
+  const stores = [...new Set(bottles.map((bottle) => bottle.store.trim()).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b, "ja"));
   els.activeCount.textContent = activeBottles.length;
   els.list.replaceChildren();
-  els.empty.hidden = activeBottles.length > 0;
+  els.empty.hidden = stores.length > 0;
 
   const groupedBottles = activeBottles.reduce((groups, bottle) => {
     (groups[bottle.store] ||= []).push(bottle);
     return groups;
   }, {});
 
-  Object.keys(groupedBottles).sort((a, b) => a.localeCompare(b, "ja")).forEach((store) => {
+  stores.forEach((store) => {
     const group = document.createElement("section");
     group.className = "store-group";
     const heading = document.createElement("button");
     heading.type = "button";
     heading.className = "store-group-heading";
-    heading.textContent = store;
+    const headingName = document.createElement("span");
+    headingName.className = "store-group-name";
+    headingName.textContent = store;
+    const headingVisit = document.createElement("small");
+    headingVisit.className = "store-last-visit";
+    headingVisit.textContent = storeVisitText(store);
+    heading.append(headingName, headingVisit);
     heading.addEventListener("click", () => openStoreHistory(store));
     const groupList = document.createElement("div");
     groupList.className = "store-group-list";
     group.append(heading, groupList);
 
-    groupedBottles[store].forEach((bottle) => {
+    const storeBottles = groupedBottles[store] || [];
+    storeBottles.forEach((bottle) => {
       const fragment = els.template.content.cloneNode(true);
       const card = fragment.querySelector(".bottle-card");
       const button = fragment.querySelector(".card-button");
@@ -205,25 +287,37 @@ function render() {
       groupList.append(fragment);
     });
 
+    if (storeBottles.length === 0) {
+      const emptyMessage = document.createElement("p");
+      emptyMessage.className = "current-keep-empty";
+      emptyMessage.textContent = "現在キープ中のボトルはありません";
+      groupList.append(emptyMessage);
+    }
+
     els.list.append(group);
   });
 }
 
 function openStoreHistory(store) {
-  const history = bottles
+  const historyByDate = bottles
     .filter((bottle) => bottle.store === store)
     .sort((a, b) => new Date(a.startedAt) - new Date(b.startedAt));
+  const history = [...historyByDate].reverse();
   els.historyStore.textContent = store;
   els.historyList.replaceChildren();
+  setLocationStatus(
+    els.historyLocationStatus,
+    storeLocations[store] ? "この店舗の場所は登録済みです。" : "未登録です。お店にいるときに現在地を登録してください。",
+  );
 
-  history.forEach((bottle, index) => {
+  history.forEach((bottle) => {
     const item = document.createElement("article");
     item.className = "history-item";
     item.classList.toggle("is-finished", bottle.remaining === 0);
     const information = document.createElement("div");
     const serial = document.createElement("span");
     serial.className = "history-serial";
-    serial.textContent = `No. ${index + 1}`;
+    serial.textContent = `No. ${historyByDate.findIndex((item) => item.id === bottle.id) + 1}`;
     const name = document.createElement("strong");
     name.textContent = `${bottle.name}（${bottle.keepNumber}回目）`;
     const started = document.createElement("p");
@@ -250,15 +344,6 @@ function openStoreHistory(store) {
   });
 
   els.historyDialog.showModal();
-}
-
-function openHistoryPicker() {
-  const stores = [...new Set(bottles.map((bottle) => bottle.store.trim()).filter(Boolean))]
-    .sort((a, b) => a.localeCompare(b, "ja"));
-  els.historyPicker.replaceChildren(new Option("店名を選択してください", ""));
-  els.historyPicker.options[0].disabled = true;
-  stores.forEach((store) => els.historyPicker.add(new Option(store, store)));
-  els.historyPickerDialog.showModal();
 }
 
 function openHistoryEdit(id) {
@@ -412,6 +497,74 @@ function selectionValue(formData, selectName, newName) {
   return selected === "__new__" ? formData.get(newName).trim() : selected;
 }
 
+async function chooseNearbyStore() {
+  const registeredStores = new Set(bottles.map((bottle) => bottle.store));
+  const candidates = Object.entries(storeLocations)
+    .filter(([store, location]) => registeredStores.has(store) && location?.latitude != null && location?.longitude != null);
+  if (candidates.length === 0) {
+    setLocationStatus(
+      els.nearbyStoreStatus,
+      "位置登録済みの店舗がありません。店名を押して履歴画面から現在地を登録してください。",
+      true,
+    );
+    return;
+  }
+
+  els.findNearbyStore.disabled = true;
+  setLocationStatus(els.nearbyStoreStatus, "現在地を確認しています…");
+  try {
+    const position = await requestCurrentPosition();
+    const nearest = candidates
+      .map(([store, location]) => ({ store, distance: distanceInMeters(position, location) }))
+      .sort((a, b) => a.distance - b.distance)[0];
+
+    if (nearest.distance > 1000) {
+      setLocationStatus(
+        els.nearbyStoreStatus,
+        `1km以内に登録済み店舗がありません。最寄りは「${nearest.store}」（${formatDistance(nearest.distance)}）です。`,
+        true,
+      );
+      return;
+    }
+
+    els.storeSelect.value = nearest.store;
+    setInputMode(els.storeSelect, els.newStore);
+    renderBrandOptionsFor(els.nameSelect, nearest.store);
+    setLocationStatus(
+      els.nearbyStoreStatus,
+      `「${nearest.store}」を選びました（現在地から約${formatDistance(nearest.distance)}）。`,
+    );
+  } catch (error) {
+    setLocationStatus(els.nearbyStoreStatus, error.message, true);
+  } finally {
+    els.findNearbyStore.disabled = false;
+  }
+}
+
+async function registerHistoryStoreLocation() {
+  const store = els.historyStore.textContent.trim();
+  if (!store) return;
+  els.saveStoreLocation.disabled = true;
+  setLocationStatus(els.historyLocationStatus, "現在地を確認しています…");
+  try {
+    const position = await requestCurrentPosition();
+    storeLocations[store] = {
+      latitude: position.latitude,
+      longitude: position.longitude,
+      updatedAt: new Date().toISOString(),
+    };
+    saveStoreLocations();
+    setLocationStatus(
+      els.historyLocationStatus,
+      `現在地を登録しました（位置精度 約${formatDistance(position.accuracy)}）。`,
+    );
+  } catch (error) {
+    setLocationStatus(els.historyLocationStatus, error.message, true);
+  } finally {
+    els.saveStoreLocation.disabled = false;
+  }
+}
+
 function prepareCurrentForm() {
   els.form.reset();
   renderStoreOptions();
@@ -422,6 +575,7 @@ function prepareCurrentForm() {
   const today = dateToInput();
   els.form.elements.startedAt.value = today;
   els.form.elements.lastVisitedAt.value = today;
+  setLocationStatus(els.nearbyStoreStatus, "店舗の場所を一度登録すると使えます。");
 }
 
 function preparePastForm() {
@@ -434,7 +588,6 @@ function preparePastForm() {
 }
 
 els.add.addEventListener("click", () => els.addMenuDialog.showModal());
-els.openHistoryPicker.addEventListener("click", openHistoryPicker);
 els.openCurrentAdd.addEventListener("click", () => {
   els.addMenuDialog.close();
   prepareCurrentForm();
@@ -451,6 +604,8 @@ els.openLabelManager.addEventListener("click", () => {
   renderLabelOptions();
   els.labelManagerDialog.showModal();
 });
+els.findNearbyStore.addEventListener("click", chooseNearbyStore);
+els.saveStoreLocation.addEventListener("click", registerHistoryStoreLocation);
 
 els.storeSelect.addEventListener("change", () => {
   setInputMode(els.storeSelect, els.newStore);
@@ -546,15 +701,6 @@ els.labelManagerForm.addEventListener("submit", async (event) => {
   } catch (error) {
     window.alert(error.message || "ラベル画像を保存できませんでした。");
   }
-});
-
-els.historyPickerForm.addEventListener("submit", (event) => {
-  event.preventDefault();
-  if (!els.historyPickerForm.reportValidity()) return;
-  const store = new FormData(els.historyPickerForm).get("historyStore");
-  if (!store) return;
-  els.historyPickerDialog.close();
-  openStoreHistory(store);
 });
 
 els.historyEditForm.addEventListener("submit", (event) => {

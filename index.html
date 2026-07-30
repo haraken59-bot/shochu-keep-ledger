@@ -40,7 +40,6 @@
             <h2 id="bottles-title">キープ中のボトル</h2>
           </div>
           <div class="list-actions">
-            <button id="open-history-picker" class="history-picker-button" type="button">店舗履歴</button>
             <label class="sort-control">
               <span class="sr-only">並び替え</span>
               <select id="sort-select">
@@ -103,6 +102,8 @@
           <select id="store-select" name="storeSelect" required></select>
           <input id="store-new" class="store-new" name="storeNew" type="text" placeholder="新しい店名を入力" maxlength="40" hidden />
         </label>
+        <button id="find-nearby-store" class="location-button" type="button">現在地から近い店を選ぶ</button>
+        <p id="nearby-store-status" class="location-status" aria-live="polite">店舗の場所を一度登録すると使えます。</p>
         <label>
           <span>焼酎の銘柄 <b>必須</b></span>
           <select id="name-select" name="nameSelect" required></select>
@@ -222,27 +223,11 @@
           </div>
           <button class="icon-button close-dialog" type="button" aria-label="閉じる">×</button>
         </div>
-        <p class="history-description">キープを入れた順に表示しています。</p>
+        <p class="history-description">新しいキープ履歴から順に表示しています。</p>
+        <button id="save-store-location" class="location-button" type="button">この店の現在地を登録</button>
+        <p id="history-location-status" class="location-status" aria-live="polite"></p>
         <div id="history-list" class="history-list"></div>
       </section>
-    </dialog>
-
-    <dialog id="history-store-picker-dialog" class="sheet">
-      <form id="history-store-picker-form" method="dialog" class="sheet-content">
-        <div class="sheet-handle" aria-hidden="true"></div>
-        <div class="sheet-heading">
-          <div>
-            <p class="eyebrow">STORE HISTORY</p>
-            <h2>店舗履歴を見る</h2>
-          </div>
-          <button class="icon-button close-dialog" type="button" aria-label="閉じる">×</button>
-        </div>
-        <label>
-          <span>お店の名前 <b>必須</b></span>
-          <select id="history-store-picker" name="historyStore" required></select>
-        </label>
-        <button class="primary-button" type="submit">履歴を表示する</button>
-      </form>
     </dialog>
 
     <dialog id="history-edit-dialog" class="sheet">
