@@ -2,6 +2,7 @@ const STORAGE_KEY = "shochu-keep-ledger-v1";
 const LABELS_KEY = "shochu-keep-ledger-label-images-v1";
 const STORE_LOCATIONS_KEY = "shochu-keep-ledger-store-locations-v1";
 const STORE_VISITS_KEY = "shochu-keep-ledger-store-visits-v1";
+const KEEP_VISITS_MIGRATION_KEY = "shochu-keep-ledger-keep-visits-migration-v1";
 const DAY = 24 * 60 * 60 * 1000;
 
 const demoBottles = [
@@ -84,6 +85,7 @@ let editingHistoryId = null;
 let editingVisitId = null;
 let calendarMonth = null;
 renumberKeeps();
+migrateKeepDatesToStoreVisits();
 saveStoreVisits();
 
 function loadBottles() {
@@ -162,6 +164,24 @@ function loadStoreVisits() {
 
 function saveStoreVisits() {
   localStorage.setItem(STORE_VISITS_KEY, JSON.stringify(storeVisits));
+}
+
+function migrateKeepDatesToStoreVisits() {
+  if (localStorage.getItem(KEEP_VISITS_MIGRATION_KEY) === "done") return;
+  const registered = new Set(
+    storeVisits.map((visit) => `${visit.store}\u0000${visit.visitedAt}`),
+  );
+
+  bottles.forEach((bottle) => {
+    [bottle.startedAt, bottle.lastVisitedAt].forEach((visitedAt) => {
+      const key = `${bottle.store}\u0000${visitedAt}`;
+      if (!bottle.store || !visitedAt || registered.has(key)) return;
+      storeVisits.push({ id: crypto.randomUUID(), store: bottle.store, visitedAt });
+      registered.add(key);
+    });
+  });
+
+  localStorage.setItem(KEEP_VISITS_MIGRATION_KEY, "done");
 }
 
 function latestStoreVisitDate(store) {
