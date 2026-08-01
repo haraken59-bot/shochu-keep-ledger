@@ -454,6 +454,9 @@ function renderStoreVisitCalendar(store) {
   for (let day = 1; day <= daysInMonth; day += 1) {
     const dateText = dateToInput(new Date(year, month, day));
     const visit = visitsByDate.get(dateText);
+    const isKeepDate = bottles.some((bottle) => (
+      bottle.store === store && bottle.startedAt === dateText
+    ));
     const button = document.createElement("button");
     button.type = "button";
     button.className = "calendar-day";
@@ -462,7 +465,11 @@ function renderStoreVisitCalendar(store) {
 
     if (visit) {
       button.classList.add("is-visited");
-      button.setAttribute("aria-label", `${formatDate(dateText)} 来店済み。編集する`);
+      button.classList.toggle("is-keep-date", isKeepDate);
+      button.setAttribute(
+        "aria-label",
+        `${formatDate(dateText)} ${isKeepDate ? "キープ日・" : ""}来店済み。編集する`,
+      );
       button.addEventListener("click", () => openVisitEdit(visit.id));
     } else {
       button.disabled = dateText > todayText;
