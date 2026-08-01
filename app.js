@@ -1,6 +1,7 @@
 const STORAGE_KEY = "shochu-keep-ledger-v1";
 const LABELS_KEY = "shochu-keep-ledger-label-images-v1";
 const STORE_LOCATIONS_KEY = "shochu-keep-ledger-store-locations-v1";
+const STORE_VISITS_KEY = "shochu-keep-ledger-store-visits-v1";
 const DAY = 24 * 60 * 60 * 1000;
 
 const demoBottles = [
@@ -58,6 +59,14 @@ const els = {
   historyList: document.querySelector("#history-list"),
   saveStoreLocation: document.querySelector("#save-store-location"),
   historyLocationStatus: document.querySelector("#history-location-status"),
+  storeVisitToday: document.querySelector("#store-visit-today"),
+  calendarPrev: document.querySelector("#calendar-prev"),
+  calendarNext: document.querySelector("#calendar-next"),
+  calendarTitle: document.querySelector("#calendar-title"),
+  calendarGrid: document.querySelector("#calendar-grid"),
+  visitEditDialog: document.querySelector("#visit-edit-dialog"),
+  visitEditForm: document.querySelector("#visit-edit-form"),
+  visitEditDelete: document.querySelector("#visit-edit-delete"),
   historyEditDialog: document.querySelector("#history-edit-dialog"),
   historyEditForm: document.querySelector("#history-edit-form"),
   historyEditStoreSelect: document.querySelector("#history-edit-store-select"),
@@ -69,9 +78,13 @@ const els = {
 let bottles = normalizeBottles(loadBottles());
 let labelImages = loadLabelImages();
 let storeLocations = loadStoreLocations();
+let storeVisits = loadStoreVisits();
 let selectedId = null;
 let editingHistoryId = null;
+let editingVisitId = null;
+let calendarMonth = null;
 renumberKeeps();
+saveStoreVisits();
 
 function loadBottles() {
   try {
@@ -118,6 +131,73 @@ function loadStoreLocations() {
 
 function saveStoreLocations() {
   localStorage.setItem(STORE_LOCATIONS_KEY, JSON.stringify(storeLocations));
+}
+
+function loadStoreVisits() {
+  try {
+    const storedText = localStorage.getItem(STORE_VISITS_KEY);
+    if (storedText !== null) {
+      const saved = JSON.parse(storedText);
+      return Array.isArray(saved)
+        ? saved.filter((visit) => visit?.store && visit?.visitedAt).map((visit) => ({
+          id: visit.id || crypto.randomUUID(),
+          store: visit.store,
+          visitedAt: visit.visitedAt,
+        }))
+        : [];
+    }
+  } catch {
+    return [];
+  }
+
+  const seen = new Set();
+  return bottles.flatMap((bottle) => {
+    const visitedAt = bottle.lastVisitedAt || bottle.startedAt;
+    const key = `${bottle.store}\u0000${visitedAt}`;
+    if (!bottle.store || !visitedAt || seen.has(key)) return [];
+    seen.add(key);
+    return [{ id: crypto.randomUUID(), store: bottle.store, visitedAt }];
+  });
+}
+
+function saveStoreVisits() {
+  localStorage.setItem(STORE_VISITS_KEY, JSON.stringify(storeVisits));
+}
+
+function latestStoreVisitDate(store) {
+  const recordedDates = storeVisits
+    .filter((visit) => visit.store === store)
+    .map((visit) => visit.visitedAt);
+  const fallbackDates = bottles
+    .filter((bottle) => bottle.store === store)
+    .map((bottle) => bottle.startedAt);
+  return [...recordedDates, ...fallbackDates].reduce(
+    (latest, date) => (!latest || date > latest ? date : latest),
+    "",
+  );
+}
+
+function syncStoreLastVisited(store) {
+  const latestVisit = latestStoreVisitDate(store);
+  if (!latestVisit) return;
+  bottles = bottles.map((bottle) => (
+    bottle.store === store ? { ...bottle, lastVisitedAt: latestVisit } : bottle
+  ));
+}
+
+function recordStoreVisit(store, visitedAt) {
+  if (!store || !visitedAt) return false;
+  const duplicate = storeVisits.some((visit) => visit.store === store && visit.visitedAt === visitedAt);
+  if (duplicate) {
+    syncStoreLastVisited(store);
+    saveBottles();
+    return false;
+  }
+  storeVisits.push({ id: crypto.randomUUID(), store, visitedAt });
+  syncStoreLastVisited(store);
+  saveStoreVisits();
+  saveBottles();
+  return true;
 }
 
 function requestCurrentPosition() {
@@ -204,17 +284,12 @@ function formatDate(dateText) {
 }
 
 function visitText(bottle) {
-  const days = getDaysSince(bottle.lastVisitedAt);
+  const days = getDaysSince(latestStoreVisitDate(bottle.store));
   return days === 0 ? "今日来店" : `前回の来店から ${days}日`;
 }
 
 function storeVisitText(store) {
-  const latestVisit = bottles
-    .filter((bottle) => bottle.store === store)
-    .reduce((latest, bottle) => (
-      !latest || new Date(bottle.lastVisitedAt) > new Date(latest) ? bottle.lastVisitedAt : latest
-    ), "");
-  const days = getDaysSince(latestVisit);
+  const days = getDaysSince(latestStoreVisitDate(store));
   return days === 0 ? "本日来店" : `最終来店から${days}日`;
 }
 
@@ -227,7 +302,7 @@ function sortedBottles() {
   return [...bottles].sort((a, b) => {
     if (sort === "remaining") return a.remaining - b.remaining;
     if (sort === "newest") return new Date(b.startedAt) - new Date(a.startedAt);
-    return new Date(a.lastVisitedAt) - new Date(b.lastVisitedAt);
+    return new Date(latestStoreVisitDate(a.store)) - new Date(latestStoreVisitDate(b.store));
   });
 }
 
@@ -247,7 +322,7 @@ function sortedStores() {
         ? Math.max(...activeStoreBottles.map((bottle) => new Date(bottle.startedAt).getTime()))
         : Number.NEGATIVE_INFINITY;
     }
-    return Math.max(...storeBottles.map((bottle) => new Date(bottle.lastVisitedAt).getTime()));
+    return new Date(latestStoreVisitDate(store)).getTime();
   };
 
   return stores.sort((a, b) => {
@@ -322,6 +397,78 @@ function render() {
   });
 }
 
+function monthStartFromDate(dateText) {
+  const date = new Date(`${dateText}T00:00:00`);
+  const validDate = Number.isNaN(date.getTime()) ? new Date() : date;
+  return new Date(validDate.getFullYear(), validDate.getMonth(), 1);
+}
+
+function renderStoreVisitCalendar(store) {
+  if (!calendarMonth) {
+    calendarMonth = monthStartFromDate(latestStoreVisitDate(store) || dateToInput());
+  }
+
+  const year = calendarMonth.getFullYear();
+  const month = calendarMonth.getMonth();
+  const firstWeekday = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const todayText = dateToInput();
+  const visitsByDate = new Map(
+    storeVisits
+      .filter((visit) => visit.store === store)
+      .map((visit) => [visit.visitedAt, visit]),
+  );
+
+  els.calendarTitle.textContent = new Intl.DateTimeFormat("ja-JP", {
+    year: "numeric",
+    month: "long",
+  }).format(calendarMonth);
+  els.calendarGrid.replaceChildren();
+
+  for (let index = 0; index < firstWeekday; index += 1) {
+    const empty = document.createElement("span");
+    empty.className = "calendar-day-empty";
+    els.calendarGrid.append(empty);
+  }
+
+  for (let day = 1; day <= daysInMonth; day += 1) {
+    const dateText = dateToInput(new Date(year, month, day));
+    const visit = visitsByDate.get(dateText);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "calendar-day";
+    button.textContent = String(day);
+    button.classList.toggle("is-today", dateText === todayText);
+
+    if (visit) {
+      button.classList.add("is-visited");
+      button.setAttribute("aria-label", `${formatDate(dateText)} 来店済み。編集する`);
+      button.addEventListener("click", () => openVisitEdit(visit.id));
+    } else {
+      button.disabled = dateText > todayText;
+      button.setAttribute("aria-label", `${formatDate(dateText)} 来店日を追加`);
+      button.addEventListener("click", () => {
+        if (!window.confirm(`${formatDate(dateText)}を来店日として追加しますか？`)) return;
+        if (!recordStoreVisit(store, dateText)) return;
+        render();
+        renderStoreVisitCalendar(store);
+      });
+    }
+    els.calendarGrid.append(button);
+  }
+
+  const today = new Date();
+  const currentMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+  els.calendarNext.disabled = calendarMonth >= currentMonth;
+}
+
+function moveCalendarMonth(offset) {
+  const store = els.historyStore.textContent.trim();
+  if (!store || !calendarMonth) return;
+  calendarMonth = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + offset, 1);
+  renderStoreVisitCalendar(store);
+}
+
 function openStoreHistory(store) {
   const historyByDate = bottles
     .filter((bottle) => bottle.store === store)
@@ -329,6 +476,8 @@ function openStoreHistory(store) {
   const history = [...historyByDate].reverse();
   els.historyStore.textContent = store;
   els.historyList.replaceChildren();
+  calendarMonth = null;
+  renderStoreVisitCalendar(store);
   setLocationStatus(
     els.historyLocationStatus,
     storeLocations[store] ? "この店舗の場所は登録済みです。" : "未登録です。お店にいるときに現在地を登録してください。",
@@ -370,6 +519,30 @@ function openStoreHistory(store) {
   els.historyDialog.showModal();
 }
 
+function openVisitEdit(id) {
+  const visit = storeVisits.find((item) => item.id === id);
+  if (!visit) return;
+  editingVisitId = id;
+  els.historyDialog.close();
+  els.visitEditForm.reset();
+  els.visitEditForm.elements.visitEditDate.value = visit.visitedAt;
+  els.visitEditForm.elements.visitEditDate.max = dateToInput();
+  els.visitEditDialog.showModal();
+}
+
+function deleteStoreVisit(id) {
+  const visit = storeVisits.find((item) => item.id === id);
+  if (!visit || !window.confirm(`${formatDate(visit.visitedAt)}の来店履歴を削除しますか？`)) return;
+  storeVisits = storeVisits.filter((item) => item.id !== id);
+  syncStoreLastVisited(visit.store);
+  saveStoreVisits();
+  saveBottles();
+  render();
+  if (els.historyDialog.open) els.historyDialog.close();
+  if (els.visitEditDialog.open) els.visitEditDialog.close();
+  if (bottles.some((bottle) => bottle.store === visit.store)) openStoreHistory(visit.store);
+}
+
 function openHistoryEdit(id) {
   const bottle = bottles.find((item) => item.id === id);
   if (!bottle) return;
@@ -404,7 +577,7 @@ function openDetail(id) {
   els.detailStore.textContent = bottle.store;
   els.detailName.textContent = `${bottle.name}（${bottle.keepNumber}回目）`;
   els.detailStarted.textContent = formatDate(bottle.startedAt);
-  els.detailLastVisited.textContent = formatDate(bottle.lastVisitedAt);
+  els.detailLastVisited.textContent = formatDate(latestStoreVisitDate(bottle.store));
   els.detailDays.textContent = visitText(bottle);
   els.detailNotes.textContent = bottle.notes || "登録なし";
   updateDetailRemaining(bottle.remaining, false);
@@ -630,6 +803,19 @@ els.openLabelManager.addEventListener("click", () => {
 });
 els.findNearbyStore.addEventListener("click", chooseNearbyStore);
 els.saveStoreLocation.addEventListener("click", registerHistoryStoreLocation);
+els.calendarPrev.addEventListener("click", () => moveCalendarMonth(-1));
+els.calendarNext.addEventListener("click", () => moveCalendarMonth(1));
+els.storeVisitToday.addEventListener("click", () => {
+  const store = els.historyStore.textContent.trim();
+  if (!store) return;
+  if (!recordStoreVisit(store, dateToInput())) {
+    window.alert("本日の来店はすでに登録されています。");
+    return;
+  }
+  render();
+  calendarMonth = monthStartFromDate(dateToInput());
+  renderStoreVisitCalendar(store);
+});
 
 els.storeSelect.addEventListener("change", () => {
   setInputMode(els.storeSelect, els.newStore);
@@ -682,6 +868,7 @@ els.form.addEventListener("submit", (event) => {
     notes: formData.get("notes").trim(),
   });
   renumberKeeps();
+  recordStoreVisit(store, formData.get("lastVisitedAt"));
   saveBottles();
   render();
   els.formDialog.close();
@@ -706,6 +893,7 @@ els.pastForm.addEventListener("submit", (event) => {
     notes: "",
   });
   renumberKeeps();
+  recordStoreVisit(store, startedAt);
   saveBottles();
   render();
   els.pastFormDialog.close();
@@ -725,6 +913,34 @@ els.labelManagerForm.addEventListener("submit", async (event) => {
   } catch (error) {
     window.alert(error.message || "ラベル画像を保存できませんでした。");
   }
+});
+
+els.visitEditDelete.addEventListener("click", () => {
+  if (editingVisitId) deleteStoreVisit(editingVisitId);
+});
+
+els.visitEditForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  if (!els.visitEditForm.reportValidity() || !editingVisitId) return;
+  const visit = storeVisits.find((item) => item.id === editingVisitId);
+  if (!visit) return;
+  const visitedAt = new FormData(els.visitEditForm).get("visitEditDate");
+  const duplicate = storeVisits.some((item) => (
+    item.id !== editingVisitId && item.store === visit.store && item.visitedAt === visitedAt
+  ));
+  if (duplicate) {
+    window.alert("同じ日の来店履歴はすでに登録されています。");
+    return;
+  }
+  storeVisits = storeVisits.map((item) => (
+    item.id === editingVisitId ? { ...item, visitedAt } : item
+  ));
+  syncStoreLastVisited(visit.store);
+  saveStoreVisits();
+  saveBottles();
+  render();
+  els.visitEditDialog.close();
+  openStoreHistory(visit.store);
 });
 
 els.historyEditForm.addEventListener("submit", (event) => {
@@ -750,11 +966,11 @@ els.range.addEventListener("input", (event) => updateDetailRemaining(event.targe
 els.decrease.addEventListener("click", () => updateDetailRemaining(Number(els.range.value) - 10));
 els.increase.addEventListener("click", () => updateDetailRemaining(Number(els.range.value) + 10));
 els.visitToday.addEventListener("click", () => {
-  const lastVisitedAt = dateToInput();
-  bottles = bottles.map((bottle) => bottle.id === selectedId ? { ...bottle, lastVisitedAt } : bottle);
-  saveBottles();
   const bottle = bottles.find((item) => item.id === selectedId);
-  els.detailLastVisited.textContent = formatDate(bottle.lastVisitedAt);
+  if (!bottle) return;
+  recordStoreVisit(bottle.store, dateToInput());
+  const lastVisitedAt = latestStoreVisitDate(bottle.store);
+  els.detailLastVisited.textContent = formatDate(lastVisitedAt);
   els.detailDays.textContent = visitText(bottle);
   render();
 });
