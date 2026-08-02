@@ -23,6 +23,7 @@ const els = {
   openCurrentAdd: document.querySelector("#open-current-add"),
   openPastAdd: document.querySelector("#open-past-add"),
   openLabelManager: document.querySelector("#open-label-manager"),
+  openDataManager: document.querySelector("#open-data-manager"),
   form: document.querySelector("#bottle-form"),
   formDialog: document.querySelector("#bottle-dialog"),
   storeSelect: document.querySelector("#store-select"),
@@ -31,6 +32,7 @@ const els = {
   nearbyStoreStatus: document.querySelector("#nearby-store-status"),
   nameSelect: document.querySelector("#name-select"),
   newName: document.querySelector("#name-new"),
+  previousKeepInfo: document.querySelector("#previous-keep-info"),
   pastForm: document.querySelector("#past-bottle-form"),
   pastFormDialog: document.querySelector("#past-bottle-dialog"),
   pastStoreSelect: document.querySelector("#past-store-select"),
@@ -41,6 +43,10 @@ const els = {
   labelManagerForm: document.querySelector("#label-manager-form"),
   labelBrandSelect: document.querySelector("#label-brand-select"),
   labelImageFile: document.querySelector("#label-image-file"),
+  dataManagerDialog: document.querySelector("#data-manager-dialog"),
+  backupDownload: document.querySelector("#backup-download"),
+  backupRestoreFile: document.querySelector("#backup-restore-file"),
+  backupStatus: document.querySelector("#backup-status"),
   detailDialog: document.querySelector("#detail-dialog"),
   detailStore: document.querySelector("#detail-store"),
   detailName: document.querySelector("#detail-name"),
@@ -53,6 +59,7 @@ const els = {
   detailLastVisited: document.querySelector("#detail-last-visited"),
   detailDays: document.querySelector("#detail-days"),
   detailNotes: document.querySelector("#detail-notes"),
+  finishRenew: document.querySelector("#finish-renew-button"),
   visitToday: document.querySelector("#visit-today-button"),
   delete: document.querySelector("#delete-button"),
   historyDialog: document.querySelector("#store-history-dialog"),
@@ -182,6 +189,152 @@ function migrateKeepDatesToStoreVisits() {
   });
 
   localStorage.setItem(KEEP_VISITS_MIGRATION_KEY, "done");
+}
+
+function setBackupStatus(message, isError = false) {
+  els.backupStatus.textContent = message;
+  els.backupStatus.classList.toggle("is-error", isError);
+}
+
+function createBackupData() {
+  return {
+    type: "shochu-keep-ledger-backup",
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    data: {
+      bottles,
+      labelImages,
+      storeLocations,
+      storeVisits,
+    },
+  };
+}
+
+function downloadBackup() {
+  const json = JSON.stringify(createBackupData(), null, 2);
+  const blob = new Blob([json], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `shochu-keep-ledger-backup-${dateToInput()}.json`;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  setBackupStatus("バックアップファイルを保存しました。大切な場所に保管してください。");
+}
+
+function parseBackupData(backup) {
+  if (backup?.type !== "shochu-keep-ledger-backup" || backup?.version !== 1 || !backup.data) {
+    throw new Error("このアプリのバックアップファイルではありません。");
+  }
+
+  const data = backup.data;
+  const isDateText = (value) => typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
+  if (!Array.isArray(data.bottles) || !data.bottles.every((bottle) => (
+    typeof bottle?.store === "string"
+    && typeof bottle?.name === "string"
+    && isDateText(bottle.startedAt)
+    && isDateText(bottle.lastVisitedAt || bottle.startedAt)
+    && Number.isFinite(Number(bottle.remaining))
+  ))) {
+    throw new Error("ボトル情報を読み込めませんでした。");
+  }
+  if (!Array.isArray(data.storeVisits) || !data.storeVisits.every((visit) => (
+    typeof visit?.store === "string" && isDateText(visit.visitedAt)
+  ))) {
+    throw new Error("来店履歴を読み込めませんでした。");
+  }
+
+  const restoredBottles = data.bottles.map((bottle) => ({
+    id: typeof bottle.id === "string" && bottle.id ? bottle.id : crypto.randomUUID(),
+    store: bottle.store.trim().slice(0, 40),
+    name: bottle.name.trim().slice(0, 40),
+    volume: 900,
+    remaining: Math.min(100, Math.max(0, Number(bottle.remaining))),
+    startedAt: bottle.startedAt,
+    lastVisitedAt: bottle.lastVisitedAt || bottle.startedAt,
+    notes: typeof bottle.notes === "string" ? bottle.notes.slice(0, 1000) : "",
+    keepNumber: 1,
+  }));
+  if (restoredBottles.some((bottle) => !bottle.store || !bottle.name)) {
+    throw new Error("店名または銘柄が空のデータは復元できません。");
+  }
+
+  const visitKeys = new Set();
+  const restoredStoreVisits = data.storeVisits.flatMap((visit) => {
+    const store = visit.store.trim().slice(0, 40);
+    const key = `${store}\u0000${visit.visitedAt}`;
+    if (!store || visitKeys.has(key)) return [];
+    visitKeys.add(key);
+    return [{
+      id: typeof visit.id === "string" && visit.id ? visit.id : crypto.randomUUID(),
+      store,
+      visitedAt: visit.visitedAt,
+    }];
+  });
+
+  const restoredLabelImages = data.labelImages && typeof data.labelImages === "object"
+    ? Object.fromEntries(Object.entries(data.labelImages).filter(([brand, image]) => (
+      typeof brand === "string" && brand && typeof image === "string" && image.startsWith("data:image/")
+    )))
+    : {};
+  const restoredStoreLocations = data.storeLocations && typeof data.storeLocations === "object"
+    ? Object.fromEntries(Object.entries(data.storeLocations).flatMap(([store, location]) => {
+      const latitude = Number(location?.latitude);
+      const longitude = Number(location?.longitude);
+      if (!store || !Number.isFinite(latitude) || !Number.isFinite(longitude)) return [];
+      return [[store.slice(0, 40), {
+        latitude,
+        longitude,
+        updatedAt: typeof location.updatedAt === "string" ? location.updatedAt : "",
+      }]];
+    }))
+    : {};
+
+  return {
+    bottles: restoredBottles,
+    labelImages: restoredLabelImages,
+    storeLocations: restoredStoreLocations,
+    storeVisits: restoredStoreVisits,
+  };
+}
+
+async function restoreBackup(file) {
+  if (!file) return;
+  if (file.size > 25 * 1024 * 1024) {
+    setBackupStatus("ファイルが大きすぎます。25MB以下のバックアップを選んでください。", true);
+    return;
+  }
+
+  try {
+    const restored = parseBackupData(JSON.parse(await file.text()));
+    if (!window.confirm("現在の入力データを、選択したバックアップの内容で置き換えますか？")) {
+      setBackupStatus("復元をキャンセルしました。");
+      return;
+    }
+
+    bottles = restored.bottles;
+    labelImages = restored.labelImages;
+    storeLocations = restored.storeLocations;
+    storeVisits = restored.storeVisits;
+    selectedId = null;
+    editingHistoryId = null;
+    editingVisitId = null;
+    calendarMonth = null;
+    renumberKeeps();
+    localStorage.removeItem(KEEP_VISITS_MIGRATION_KEY);
+    migrateKeepDatesToStoreVisits();
+    new Set(bottles.map((bottle) => bottle.store)).forEach(syncStoreLastVisited);
+    saveBottles();
+    saveLabelImages();
+    saveStoreLocations();
+    saveStoreVisits();
+    render();
+    setBackupStatus(`復元しました。ボトル履歴 ${bottles.length}件、来店日 ${storeVisits.length}件です。`);
+  } catch (error) {
+    setBackupStatus(error.message || "バックアップを復元できませんでした。", true);
+  }
 }
 
 function latestStoreVisitDate(store) {
@@ -623,6 +776,22 @@ function updateDetailRemaining(value, persist = true) {
   }
 }
 
+function finishAndOpenNextBottleForm() {
+  const bottle = bottles.find((item) => item.id === selectedId);
+  if (!bottle) return;
+  if (!window.confirm(`「${bottle.name}」を飲み切りにして、次のボトル入力へ進みますか？`)) return;
+
+  const today = dateToInput();
+  bottles = bottles.map((item) => item.id === bottle.id ? { ...item, remaining: 0 } : item);
+  recordStoreVisit(bottle.store, today);
+  saveBottles();
+  render();
+  els.detailDialog.close();
+  prepareCurrentForm(bottle.store);
+  els.formDialog.showModal();
+  requestAnimationFrame(() => els.nameSelect.focus());
+}
+
 function renderOptions(select, values, placeholder, newLabel, formatLabel = (value) => value) {
   select.replaceChildren(new Option(placeholder, ""));
   select.options[0].disabled = true;
@@ -640,6 +809,29 @@ function renderStoreOptions() {
 
 function selectedStore(select, newInput) {
   return select.value === "__new__" ? newInput.value.trim() : select.value;
+}
+
+function selectedBrand(select, newInput) {
+  return select.value === "__new__" ? newInput.value.trim() : select.value;
+}
+
+function updatePreviousKeepInfo() {
+  const store = selectedStore(els.storeSelect, els.newStore);
+  const brand = selectedBrand(els.nameSelect, els.newName);
+  if (!store || !brand) {
+    els.previousKeepInfo.textContent = "";
+    els.previousKeepInfo.hidden = true;
+    return;
+  }
+
+  const previousBottle = bottles
+    .filter((bottle) => bottle.store === store && bottle.name === brand)
+    .sort((a, b) => b.startedAt.localeCompare(a.startedAt))[0];
+
+  els.previousKeepInfo.textContent = previousBottle
+    ? `前回この店でキープした日：${formatDate(previousBottle.startedAt)}`
+    : "この店では初めてキープする銘柄です";
+  els.previousKeepInfo.hidden = false;
 }
 
 function renderBrandOptionsFor(select, store, excludeId = null) {
@@ -754,6 +946,7 @@ async function chooseNearbyStore() {
     els.storeSelect.value = nearest.store;
     setInputMode(els.storeSelect, els.newStore);
     renderBrandOptionsFor(els.nameSelect, nearest.store);
+    updatePreviousKeepInfo();
     setLocationStatus(
       els.nearbyStoreStatus,
       `「${nearest.store}」を選びました（現在地から約${formatDistance(nearest.distance)}）。`,
@@ -789,16 +982,21 @@ async function registerHistoryStoreLocation() {
   }
 }
 
-function prepareCurrentForm() {
+function prepareCurrentForm(preselectedStore = "") {
   els.form.reset();
   renderStoreOptions();
   renderBrandOptions();
+  if (preselectedStore && [...els.storeSelect.options].some((option) => option.value === preselectedStore)) {
+    els.storeSelect.value = preselectedStore;
+    renderBrandOptionsFor(els.nameSelect, preselectedStore);
+  }
   setInputMode(els.storeSelect, els.newStore);
   setInputMode(els.nameSelect, els.newName);
   els.form.elements.remaining.value = 100;
   const today = dateToInput();
   els.form.elements.startedAt.value = today;
   els.form.elements.lastVisitedAt.value = today;
+  updatePreviousKeepInfo();
   setLocationStatus(els.nearbyStoreStatus, "店舗の場所を一度登録すると使えます。");
 }
 
@@ -828,6 +1026,18 @@ els.openLabelManager.addEventListener("click", () => {
   renderLabelOptions();
   els.labelManagerDialog.showModal();
 });
+els.openDataManager.addEventListener("click", () => {
+  els.addMenuDialog.close();
+  els.backupRestoreFile.value = "";
+  setBackupStatus("復元するときは、先に現在のデータをバックアップしておくと安心です。");
+  els.dataManagerDialog.showModal();
+});
+els.backupDownload.addEventListener("click", downloadBackup);
+els.backupRestoreFile.addEventListener("change", async () => {
+  const [file] = els.backupRestoreFile.files;
+  await restoreBackup(file);
+  els.backupRestoreFile.value = "";
+});
 els.findNearbyStore.addEventListener("click", chooseNearbyStore);
 els.saveStoreLocation.addEventListener("click", registerHistoryStoreLocation);
 els.calendarPrev.addEventListener("click", () => moveCalendarMonth(-1));
@@ -847,11 +1057,17 @@ els.storeVisitToday.addEventListener("click", () => {
 els.storeSelect.addEventListener("change", () => {
   setInputMode(els.storeSelect, els.newStore);
   renderBrandOptionsFor(els.nameSelect, selectedStore(els.storeSelect, els.newStore));
+  updatePreviousKeepInfo();
 });
-els.nameSelect.addEventListener("change", () => setInputMode(els.nameSelect, els.newName));
+els.nameSelect.addEventListener("change", () => {
+  setInputMode(els.nameSelect, els.newName);
+  updatePreviousKeepInfo();
+});
 els.newStore.addEventListener("input", () => {
   renderBrandOptionsFor(els.nameSelect, selectedStore(els.storeSelect, els.newStore));
+  updatePreviousKeepInfo();
 });
+els.newName.addEventListener("input", updatePreviousKeepInfo);
 els.pastStoreSelect.addEventListener("change", () => {
   setInputMode(els.pastStoreSelect, els.pastNewStore);
   renderBrandOptionsFor(els.pastNameSelect, selectedStore(els.pastStoreSelect, els.pastNewStore));
@@ -992,6 +1208,7 @@ els.sort.addEventListener("change", render);
 els.range.addEventListener("input", (event) => updateDetailRemaining(event.target.value));
 els.decrease.addEventListener("click", () => updateDetailRemaining(Number(els.range.value) - 10));
 els.increase.addEventListener("click", () => updateDetailRemaining(Number(els.range.value) + 10));
+els.finishRenew.addEventListener("click", finishAndOpenNextBottleForm);
 els.visitToday.addEventListener("click", () => {
   const bottle = bottles.find((item) => item.id === selectedId);
   if (!bottle) return;

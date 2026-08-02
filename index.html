@@ -83,6 +83,10 @@
           <span>ラベル画像を登録</span>
           <small>銘柄ごとに、ボトルカードの画像を設定します</small>
         </button>
+        <button id="open-data-manager" class="add-menu-button" type="button">
+          <span>バックアップ・復元</span>
+          <small>入力データをファイルに保存し、あとから戻せます</small>
+        </button>
       </section>
     </dialog>
 
@@ -109,6 +113,7 @@
           <select id="name-select" name="nameSelect" required></select>
           <input id="name-new" class="brand-new" name="nameNew" type="text" placeholder="新しい銘柄を入力" maxlength="40" hidden />
         </label>
+        <p id="previous-keep-info" class="previous-keep-info" aria-live="polite" hidden></p>
         <label>
           <span>残量（%）</span>
           <input id="remaining" name="remaining" type="number" min="0" max="100" value="100" inputmode="numeric" />
@@ -183,6 +188,26 @@
       </form>
     </dialog>
 
+    <dialog id="data-manager-dialog" class="sheet">
+      <section class="sheet-content" aria-labelledby="data-manager-title">
+        <div class="sheet-handle" aria-hidden="true"></div>
+        <div class="sheet-heading">
+          <div>
+            <p class="eyebrow">DATA BACKUP</p>
+            <h2 id="data-manager-title">バックアップ・復元</h2>
+          </div>
+          <button class="icon-button close-dialog" type="button" aria-label="閉じる">×</button>
+        </div>
+        <p class="past-form-description">ボトル、来店履歴、ラベル画像、登録した店舗位置を一つのファイルに保存します。</p>
+        <button id="backup-download" class="primary-button" type="button">バックアップファイルを保存</button>
+        <label class="restore-file-button">
+          <input id="backup-restore-file" class="sr-only" type="file" accept="application/json,.json" />
+          <span>バックアップファイルから復元</span>
+        </label>
+        <p id="backup-status" class="backup-status" aria-live="polite"></p>
+      </section>
+    </dialog>
+
     <dialog id="detail-dialog" class="sheet detail-sheet">
       <section class="sheet-content" aria-labelledby="detail-name">
         <div class="sheet-handle" aria-hidden="true"></div>
@@ -208,6 +233,7 @@
           <div><dt>最終来店日</dt><dd><span id="detail-last-visited"></span><small id="detail-days"></small></dd></div>
           <div id="detail-notes-row"><dt>メモ</dt><dd id="detail-notes"></dd></div>
         </dl>
+        <button id="finish-renew-button" class="primary-button finish-renew-button" type="button">飲み切り＋次の銘柄を入力</button>
         <button id="visit-today-button" class="secondary-button" type="button">今日来店した</button>
         <button id="delete-button" class="text-button" type="button">このボトルを削除</button>
       </section>
