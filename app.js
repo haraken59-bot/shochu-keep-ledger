@@ -770,8 +770,14 @@ function updateDetailRemaining(value, persist = true) {
   els.detailRemaining.textContent = `${amount}%`;
   els.detailProgress.style.width = `${amount}%`;
   if (persist && selectedId) {
+    const selectedBottle = bottles.find((bottle) => bottle.id === selectedId);
+    if (!selectedBottle || Number(selectedBottle.remaining) === amount) return;
     bottles = bottles.map((bottle) => bottle.id === selectedId ? { ...bottle, remaining: amount } : bottle);
+    recordStoreVisit(selectedBottle.store, dateToInput());
     saveBottles();
+    const updatedBottle = bottles.find((bottle) => bottle.id === selectedId);
+    els.detailLastVisited.textContent = formatDate(latestStoreVisitDate(selectedBottle.store));
+    els.detailDays.textContent = visitText(updatedBottle);
     render();
   }
 }
