@@ -90,6 +90,8 @@ let selectedId = null;
 let editingHistoryId = null;
 let editingVisitId = null;
 let calendarMonth = null;
+let nearbyStoreDistances = null;
+let previousSortValue = els.sort.value;
 renumberKeeps();
 migrateKeepDatesToStoreVisits();
 saveStoreVisits();
@@ -493,6 +495,9 @@ function sortedStores() {
       return activeStoreBottles.length
         ? Math.max(...activeStoreBottles.map((bottle) => new Date(bottle.startedAt).getTime()))
         : Number.NEGATIVE_INFINITY;
+    }
+    if (sort === "nearby") {
+      return nearbyStoreDistances?.get(store) ?? Number.POSITIVE_INFINITY;
     }
     return new Date(latestStoreVisitDate(store)).getTime();
   };
@@ -963,6 +968,43 @@ async function chooseNearbyStore() {
   }
 }
 
+async function changeHomeSort() {
+  const requestedSort = els.sort.value;
+  if (requestedSort !== "nearby") {
+    previousSortValue = requestedSort;
+    nearbyStoreDistances = null;
+    render();
+    return;
+  }
+
+  const stores = new Set(bottles.map((bottle) => bottle.store));
+  const candidates = Object.entries(storeLocations)
+    .filter(([store, location]) => stores.has(store) && location?.latitude != null && location?.longitude != null);
+  if (candidates.length === 0) {
+    els.sort.value = previousSortValue;
+    render();
+    window.alert("位置登録済みの店舗がありません。店名を押して、店舗の現在地を登録してください。");
+    return;
+  }
+
+  els.sort.disabled = true;
+  try {
+    const position = await requestCurrentPosition();
+    nearbyStoreDistances = new Map(
+      candidates.map(([store, location]) => [store, distanceInMeters(position, location)]),
+    );
+    previousSortValue = requestedSort;
+    render();
+  } catch (error) {
+    nearbyStoreDistances = null;
+    els.sort.value = previousSortValue;
+    render();
+    window.alert(error.message);
+  } finally {
+    els.sort.disabled = false;
+  }
+}
+
 async function registerHistoryStoreLocation() {
   const store = els.historyStore.textContent.trim();
   if (!store) return;
@@ -1209,7 +1251,7 @@ els.historyEditForm.addEventListener("submit", (event) => {
   openStoreHistory(store);
 });
 
-els.sort.addEventListener("change", render);
+els.sort.addEventListener("change", changeHomeSort);
 els.range.addEventListener("input", (event) => updateDetailRemaining(event.target.value));
 els.decrease.addEventListener("click", () => updateDetailRemaining(Number(els.range.value) - 10));
 els.increase.addEventListener("click", () => updateDetailRemaining(Number(els.range.value) + 10));
