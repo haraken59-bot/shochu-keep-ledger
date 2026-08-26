@@ -1238,5 +1238,12 @@ document.querySelectorAll(".close-dialog").forEach((button) => button.addEventLi
 render();
 
 if ("serviceWorker" in navigator) {
-  window.addEventListener("load", () => navigator.serviceWorker.register("service-worker.js"));
+  window.addEventListener("load", async () => {
+    try {
+      const registration = await navigator.serviceWorker.register("service-worker.js");
+      await registration.update();
+    } catch {
+      // オフライン時は既存のキャッシュをそのまま利用する。
+    }
+  });
 }
