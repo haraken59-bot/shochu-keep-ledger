@@ -60,7 +60,6 @@ const els = {
   detailDays: document.querySelector("#detail-days"),
   detailNotes: document.querySelector("#detail-notes"),
   finishRenew: document.querySelector("#finish-renew-button"),
-  visitToday: document.querySelector("#visit-today-button"),
   delete: document.querySelector("#delete-button"),
   historyDialog: document.querySelector("#store-history-dialog"),
   historyStore: document.querySelector("#history-store"),
@@ -1215,15 +1214,6 @@ els.range.addEventListener("input", (event) => updateDetailRemaining(event.targe
 els.decrease.addEventListener("click", () => updateDetailRemaining(Number(els.range.value) - 10));
 els.increase.addEventListener("click", () => updateDetailRemaining(Number(els.range.value) + 10));
 els.finishRenew.addEventListener("click", finishAndOpenNextBottleForm);
-els.visitToday.addEventListener("click", () => {
-  const bottle = bottles.find((item) => item.id === selectedId);
-  if (!bottle) return;
-  recordStoreVisit(bottle.store, dateToInput());
-  const lastVisitedAt = latestStoreVisitDate(bottle.store);
-  els.detailLastVisited.textContent = formatDate(lastVisitedAt);
-  els.detailDays.textContent = visitText(bottle);
-  render();
-});
 els.delete.addEventListener("click", () => {
   const bottle = bottles.find((item) => item.id === selectedId);
   if (!bottle || !window.confirm(`「${bottle.name}」を削除しますか？`)) return;

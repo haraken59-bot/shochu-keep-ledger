@@ -1,11 +1,11 @@
-const CACHE_NAME = "shochu-keep-ledger-v18";
+const CACHE_NAME = "shochu-keep-ledger-v19";
 const APP_FILES = [
   "./",
   "./index.html",
-  "./styles.css?v=18",
-  "./app.js?v=18",
-  "./manifest.webmanifest?v=18",
-  "./icon.svg?v=18",
+  "./styles.css?v=19",
+  "./app.js?v=19",
+  "./manifest.webmanifest?v=19",
+  "./icon.svg?v=19",
   "./icon.svg"
 ];
 
