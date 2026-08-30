@@ -1,0 +1,18 @@
+{
+  "name": "焼酎キープ帳",
+  "short_name": "焼酎キープ帳",
+  "description": "お店にキープした焼酎を記録するアプリ",
+  "lang": "ja",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#fcfaf6",
+  "theme_color": "#7d3025",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
