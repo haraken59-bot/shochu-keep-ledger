@@ -4,6 +4,10 @@ const STORE_LOCATIONS_KEY = "shochu-keep-ledger-store-locations-v1";
 const STORE_VISITS_KEY = "shochu-keep-ledger-store-visits-v1";
 const KEEP_VISITS_MIGRATION_KEY = "shochu-keep-ledger-keep-visits-migration-v1";
 const CLOUD_MIGRATION_KEY = "shochu-keep-ledger-cloud-migration-v1";
+const CLOUD_OWNER_KEY = "shochu-keep-ledger-cloud-owner-v1";
+const PENDING_REMAINING_KEY = "shochu-keep-ledger-pending-remaining-v1";
+const PENDING_VISIT_DELETES_KEY = "shochu-keep-ledger-pending-visit-deletes-v1";
+const PENDING_LABELS_KEY = "shochu-keep-ledger-pending-labels-v1";
 const DAY = 24 * 60 * 60 * 1000;
 const PUBLIC_APP_URL = "https://haraken59-bot.github.io/shochu-keep-ledger/";
 
@@ -31,6 +35,7 @@ const els = {
   cloudMigrationSummary: document.querySelector("#cloud-migration-summary"),
   cloudMigrationButton: document.querySelector("#cloud-migration-button"),
   cloudMigrationStatus: document.querySelector("#cloud-migration-status"),
+  cloudSyncStatus: document.querySelector("#cloud-sync-status"),
   list: document.querySelector("#bottle-list"),
   empty: document.querySelector("#empty-state"),
   template: document.querySelector("#bottle-card-template"),
@@ -111,6 +116,10 @@ let nearbyStoreDistances = null;
 let previousSortValue = els.sort.value;
 let supabaseClient = null;
 let authSession = null;
+let cloudSyncTimer = null;
+let cloudSyncPromise = null;
+let cloudSyncQueued = false;
+let cloudSyncState = "idle";
 renumberKeeps();
 migrateKeepDatesToStoreVisits();
 saveStoreVisits();
@@ -136,6 +145,7 @@ function renderAuthState(session = null) {
   els.authSignedIn.hidden = !connected;
   els.authUserEmail.textContent = session?.user?.email || "";
   renderCloudMigrationState();
+  renderCloudSyncState();
 }
 
 async function initializeSupabaseAuth() {
@@ -158,10 +168,16 @@ async function initializeSupabaseAuth() {
     const { data, error } = await supabaseClient.auth.getSession();
     if (error) throw error;
     renderAuthState(data.session);
+    if (isCloudSyncEnabled()) scheduleCloudSync(0);
     supabaseClient.auth.onAuthStateChange((event, session) => {
       renderAuthState(session);
       if (event === "SIGNED_IN") {
-        setAuthMessage("ログインできました。現在の端末内データはまだ移行していません。");
+        if (isCloudSyncEnabled()) {
+          setAuthMessage("ログインできました。端末内の変更をクラウドへ確認します。");
+          scheduleCloudSync(0);
+        } else {
+          setAuthMessage("ログインできました。現在の端末内データはまだ移行していません。");
+        }
       }
     });
   } catch (error) {
@@ -199,6 +215,9 @@ async function signOutFromSupabase() {
   try {
     const { error } = await supabaseClient.auth.signOut();
     if (error) throw error;
+    window.clearTimeout(cloudSyncTimer);
+    cloudSyncTimer = null;
+    cloudSyncQueued = false;
     renderAuthState();
     setAuthMessage("ログアウトしました。端末内のデータは残っています。");
   } catch (error) {
@@ -300,6 +319,445 @@ function dataUrlToImageFile(dataUrl) {
   const mimeType = match[1].toLowerCase();
   const extension = mimeType === "image/png" ? "png" : mimeType === "image/webp" ? "webp" : "jpg";
   return { blob: new Blob([values], { type: mimeType }), extension, mimeType };
+}
+
+function readStoredObject(key) {
+  try {
+    const value = JSON.parse(localStorage.getItem(key));
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+function cloudOwnerId() {
+  return authSession?.user?.id || localStorage.getItem(CLOUD_OWNER_KEY) || "unassigned";
+}
+
+function pendingCloudStorageKey(baseKey) {
+  return `${baseKey}:${cloudOwnerId()}`;
+}
+
+function isCloudSyncEnabled() {
+  if (!authSession?.user) return false;
+  try {
+    return Boolean(JSON.parse(localStorage.getItem(cloudMigrationStorageKey()))?.completedAt);
+  } catch {
+    return false;
+  }
+}
+
+function setCloudSyncState(state, message) {
+  cloudSyncState = state;
+  const connected = Boolean(authSession?.user);
+  els.accountDot.classList.toggle("is-pending", connected && state === "pending");
+  if (!connected) {
+    if (els.cloudSyncStatus) els.cloudSyncStatus.textContent = "";
+    return;
+  }
+
+  const statusLabels = {
+    disabled: "クラウド接続済み",
+    idle: "クラウド同期済み",
+    syncing: "クラウド同期中",
+    pending: "同期待ち",
+  };
+  els.accountStatus.textContent = statusLabels[state] || "クラウド接続済み";
+  if (els.cloudSyncStatus) {
+    els.cloudSyncStatus.textContent = message || "";
+    els.cloudSyncStatus.classList.toggle("is-pending", state === "pending");
+  }
+}
+
+function renderCloudSyncState() {
+  if (!els.cloudSyncStatus) return;
+  if (!authSession?.user) {
+    setCloudSyncState("disabled", "");
+    return;
+  }
+  if (!isCloudSyncEnabled()) {
+    setCloudSyncState("disabled", "初回移行が完了すると、以後の変更を自動でクラウドへ保存します。");
+    return;
+  }
+  localStorage.setItem(CLOUD_OWNER_KEY, authSession.user.id);
+  if (cloudSyncState === "syncing") {
+    setCloudSyncState("syncing", "端末内の変更をクラウドへ保存しています…");
+  } else if (cloudSyncState === "pending") {
+    setCloudSyncState("pending", "通信できるようになったら自動で再試行します。端末内のデータは保存済みです。");
+  } else {
+    setCloudSyncState("idle", "残量・ボトル・来店日・店舗位置・ラベルの変更を自動で保存します。");
+  }
+}
+
+function loadPendingRemainingChanges() {
+  return readStoredObject(pendingCloudStorageKey(PENDING_REMAINING_KEY));
+}
+
+function savePendingRemainingChanges(changes) {
+  localStorage.setItem(pendingCloudStorageKey(PENDING_REMAINING_KEY), JSON.stringify(changes));
+}
+
+function queueRemainingChange(bottle, newRemaining) {
+  if (!bottle) return;
+  const changes = loadPendingRemainingChanges();
+  const legacyId = String(bottle.id);
+  const previousRemaining = changes[legacyId]?.previousRemaining ?? Number(bottle.remaining);
+  if (Number(newRemaining) === Number(previousRemaining)) {
+    delete changes[legacyId];
+  } else {
+    changes[legacyId] = {
+      previousRemaining,
+      newRemaining: Number(newRemaining),
+      visitedOn: dateToInput(),
+      changedAt: new Date().toISOString(),
+    };
+  }
+  savePendingRemainingChanges(changes);
+}
+
+function removePendingRemainingChange(bottleId) {
+  const changes = loadPendingRemainingChanges();
+  delete changes[String(bottleId)];
+  savePendingRemainingChanges(changes);
+}
+
+function loadPendingVisitDeletes() {
+  return readStoredObject(pendingCloudStorageKey(PENDING_VISIT_DELETES_KEY));
+}
+
+function visitDeleteKey(store, visitedAt) {
+  return `${store}\u0000${visitedAt}`;
+}
+
+function queueVisitDelete(store, visitedAt) {
+  if (!store || !visitedAt) return;
+  const changes = loadPendingVisitDeletes();
+  changes[visitDeleteKey(store, visitedAt)] = { store, visitedAt, changedAt: new Date().toISOString() };
+  localStorage.setItem(pendingCloudStorageKey(PENDING_VISIT_DELETES_KEY), JSON.stringify(changes));
+}
+
+function cancelPendingVisitDelete(store, visitedAt) {
+  const changes = loadPendingVisitDeletes();
+  delete changes[visitDeleteKey(store, visitedAt)];
+  localStorage.setItem(pendingCloudStorageKey(PENDING_VISIT_DELETES_KEY), JSON.stringify(changes));
+}
+
+function queueRemovedVisitDeletes(previousVisits, nextVisits) {
+  const nextKeys = new Set(nextVisits.map((visit) => visitDeleteKey(visit.store, visit.visitedAt)));
+  previousVisits.forEach((visit) => {
+    if (!nextKeys.has(visitDeleteKey(visit.store, visit.visitedAt))) {
+      queueVisitDelete(visit.store, visit.visitedAt);
+    }
+  });
+  nextVisits.forEach((visit) => cancelPendingVisitDelete(visit.store, visit.visitedAt));
+}
+
+function loadPendingLabels() {
+  return readStoredObject(pendingCloudStorageKey(PENDING_LABELS_KEY));
+}
+
+function queueLabelSync(brand) {
+  const changes = loadPendingLabels();
+  changes[brand] = { changedAt: new Date().toISOString() };
+  localStorage.setItem(pendingCloudStorageKey(PENDING_LABELS_KEY), JSON.stringify(changes));
+}
+
+function scheduleCloudSync(delay = 700) {
+  if (!isCloudSyncEnabled()) return;
+  if (navigator.onLine === false) {
+    setCloudSyncState("pending", "通信できるようになったら自動で再試行します。端末内のデータは保存済みです。");
+    return;
+  }
+  if (cloudSyncPromise) {
+    cloudSyncQueued = true;
+    return;
+  }
+  window.clearTimeout(cloudSyncTimer);
+  setCloudSyncState("syncing", "端末内の変更をクラウドへ保存しています…");
+  cloudSyncTimer = window.setTimeout(() => {
+    cloudSyncTimer = null;
+    runCloudSync();
+  }, delay);
+}
+
+async function ensureCloudStores(snapshot, userId) {
+  const existingStores = await supabaseData(
+    supabaseClient.from("stores").select("id,name,latitude,longitude,location_updated_at"),
+  );
+  const storeByName = new Map(existingStores.map((store) => [store.name, store]));
+  const missingNames = snapshot.stores.filter((name) => !storeByName.has(name));
+
+  if (missingNames.length > 0) {
+    const createdStores = await supabaseData(
+      supabaseClient.from("stores").insert(missingNames.map((name) => {
+        const location = snapshot.locations[name];
+        return {
+          user_id: userId,
+          name,
+          area: "",
+          notes: "",
+          latitude: location?.latitude ?? null,
+          longitude: location?.longitude ?? null,
+          location_updated_at: location?.updatedAt || null,
+        };
+      })).select("id,name,latitude,longitude,location_updated_at"),
+    );
+    createdStores.forEach((store) => storeByName.set(store.name, store));
+  }
+
+  for (const [store, location] of Object.entries(snapshot.locations)) {
+    const cloudStore = storeByName.get(store);
+    if (!cloudStore || !location) continue;
+    const hasChanged = Number(cloudStore.latitude) !== Number(location.latitude)
+      || Number(cloudStore.longitude) !== Number(location.longitude)
+      || (location.updatedAt && cloudStore.location_updated_at !== location.updatedAt);
+    if (!hasChanged) continue;
+    await supabaseData(
+      supabaseClient.from("stores").update({
+        latitude: location.latitude,
+        longitude: location.longitude,
+        location_updated_at: location.updatedAt || new Date().toISOString(),
+      }).eq("id", cloudStore.id),
+    );
+  }
+
+  return new Map([...storeByName].map(([name, store]) => [name, store.id]));
+}
+
+function cloudBottlePayload(bottle, storeId, remaining = bottle.remaining) {
+  return {
+    store_id: storeId,
+    brand: bottle.name,
+    volume_ml: Number(bottle.volume) || 900,
+    current_remaining: Math.min(100, Math.max(0, Number(remaining))),
+    kept_at: bottle.startedAt,
+    last_visited_at: bottle.lastVisitedAt || bottle.startedAt,
+    status: Number(bottle.remaining) > 0 ? "active" : "finished",
+    notes: bottle.notes || "",
+    legacy_id: String(bottle.id),
+  };
+}
+
+function cloudBottleMetadataChanged(cloudBottle, expected) {
+  return cloudBottle.store_id !== expected.store_id
+    || cloudBottle.brand !== expected.brand
+    || Number(cloudBottle.volume_ml) !== Number(expected.volume_ml)
+    || cloudBottle.kept_at !== expected.kept_at
+    || cloudBottle.last_visited_at !== expected.last_visited_at
+    || cloudBottle.status !== expected.status
+    || (cloudBottle.notes || "") !== expected.notes;
+}
+
+async function syncCloudBottles(snapshot, storeIds, userId) {
+  const pendingRemaining = loadPendingRemainingChanges();
+  let cloudBottles = await supabaseData(
+    supabaseClient.from("bottles").select("id,legacy_id,store_id,brand,volume_ml,current_remaining,kept_at,last_visited_at,status,notes"),
+  );
+  const cloudByLegacyId = new Map(cloudBottles
+    .filter((bottle) => bottle.legacy_id)
+    .map((bottle) => [String(bottle.legacy_id), bottle]));
+  const localByLegacyId = new Map(snapshot.bottles.map((bottle) => [String(bottle.id), bottle]));
+  const missingBottles = snapshot.bottles.filter((bottle) => !cloudByLegacyId.has(String(bottle.id)));
+
+  if (missingBottles.length > 0) {
+    const createdBottles = await supabaseData(
+      supabaseClient.from("bottles").insert(missingBottles.map((bottle) => {
+        const pending = pendingRemaining[String(bottle.id)];
+        return {
+          user_id: userId,
+          ...cloudBottlePayload(
+            bottle,
+            storeIds.get(bottle.store),
+            pending?.previousRemaining ?? bottle.remaining,
+          ),
+          last_updated_at: new Date().toISOString(),
+        };
+      })).select("id,legacy_id,store_id,brand,volume_ml,current_remaining,kept_at,last_visited_at,status,notes"),
+    );
+    createdBottles.forEach((bottle) => {
+      cloudBottles.push(bottle);
+      cloudByLegacyId.set(String(bottle.legacy_id), bottle);
+    });
+  }
+
+  const pendingEntries = Object.entries(pendingRemaining);
+  for (const [legacyId, change] of pendingEntries) {
+    const localBottle = localByLegacyId.get(legacyId);
+    const cloudBottle = cloudByLegacyId.get(legacyId);
+    if (!localBottle || !cloudBottle) {
+      const currentChanges = loadPendingRemainingChanges();
+      if (!localBottle) delete currentChanges[legacyId];
+      savePendingRemainingChanges(currentChanges);
+      continue;
+    }
+    if (Number(cloudBottle.current_remaining) !== Number(change.newRemaining)) {
+      await supabaseData(
+        supabaseClient.rpc("update_bottle_remaining", {
+          p_bottle_id: cloudBottle.id,
+          p_new_remaining: Number(change.newRemaining),
+          p_notes: "焼酎キープ帳から更新",
+          p_image_path: null,
+          p_visited_on: change.visitedOn || dateToInput(),
+        }),
+      );
+      cloudBottle.current_remaining = Number(change.newRemaining);
+    }
+    const currentChanges = loadPendingRemainingChanges();
+    if (currentChanges[legacyId]?.changedAt === change.changedAt) {
+      delete currentChanges[legacyId];
+      savePendingRemainingChanges(currentChanges);
+    }
+  }
+
+  for (const bottle of snapshot.bottles) {
+    const cloudBottle = cloudByLegacyId.get(String(bottle.id));
+    if (!cloudBottle) continue;
+    if (Number(cloudBottle.current_remaining) !== Number(bottle.remaining)) {
+      await supabaseData(
+        supabaseClient.rpc("update_bottle_remaining", {
+          p_bottle_id: cloudBottle.id,
+          p_new_remaining: Number(bottle.remaining),
+          p_notes: "焼酎キープ帳から更新",
+          p_image_path: null,
+          p_visited_on: dateToInput(),
+        }),
+      );
+      cloudBottle.current_remaining = Number(bottle.remaining);
+    }
+    const expected = cloudBottlePayload(bottle, storeIds.get(bottle.store));
+    if (!cloudBottleMetadataChanged(cloudBottle, expected)) continue;
+    const { current_remaining: ignoredRemaining, legacy_id: ignoredLegacyId, ...metadata } = expected;
+    await supabaseData(
+      supabaseClient.from("bottles").update({
+        ...metadata,
+        last_updated_at: new Date().toISOString(),
+      }).eq("id", cloudBottle.id),
+    );
+  }
+
+  const localIds = new Set(localByLegacyId.keys());
+  const deletedCloudIds = cloudBottles
+    .filter((bottle) => bottle.legacy_id && !localIds.has(String(bottle.legacy_id)))
+    .map((bottle) => bottle.id);
+  if (deletedCloudIds.length > 0) {
+    await supabaseData(supabaseClient.from("bottles").delete().in("id", deletedCloudIds));
+  }
+}
+
+async function syncCloudVisits(snapshot, storeIds, userId) {
+  const pendingDeletes = loadPendingVisitDeletes();
+  for (const [key, change] of Object.entries(pendingDeletes)) {
+    const storeId = storeIds.get(change.store);
+    if (storeId) {
+      await supabaseData(
+        supabaseClient.from("store_visits").delete()
+          .eq("store_id", storeId)
+          .eq("visited_on", change.visitedAt),
+      );
+    }
+    const currentDeletes = loadPendingVisitDeletes();
+    if (currentDeletes[key]?.changedAt === change.changedAt) {
+      delete currentDeletes[key];
+      localStorage.setItem(pendingCloudStorageKey(PENDING_VISIT_DELETES_KEY), JSON.stringify(currentDeletes));
+    }
+  }
+
+  const cloudVisits = await supabaseData(
+    supabaseClient.from("store_visits").select("store_id,visited_on"),
+  );
+  const cloudKeys = new Set(cloudVisits.map((visit) => `${visit.store_id}\u0000${visit.visited_on}`));
+  const missingVisits = snapshot.visits.filter((visit) => {
+    const key = `${storeIds.get(visit.store)}\u0000${visit.visitedAt}`;
+    if (cloudKeys.has(key)) return false;
+    cloudKeys.add(key);
+    return true;
+  });
+  if (missingVisits.length > 0) {
+    await supabaseData(
+      supabaseClient.from("store_visits").insert(missingVisits.map((visit) => ({
+        user_id: userId,
+        store_id: storeIds.get(visit.store),
+        visited_on: visit.visitedAt,
+        source: "shochu_keep_ledger",
+      }))),
+    );
+  }
+}
+
+async function syncPendingCloudLabels(userId) {
+  const pendingLabels = loadPendingLabels();
+  if (Object.keys(pendingLabels).length === 0) return;
+  const cloudLabels = await supabaseData(
+    supabaseClient.from("brand_labels").select("id,brand,image_path"),
+  );
+  const cloudByBrand = new Map(cloudLabels.map((label) => [label.brand, label]));
+
+  for (const [brand, change] of Object.entries(pendingLabels)) {
+    const dataUrl = labelImages[brand];
+    if (!dataUrl) continue;
+    const image = dataUrlToImageFile(dataUrl);
+    const imagePath = `${userId}/${crypto.randomUUID()}.${image.extension}`;
+    const { error: uploadError } = await supabaseClient.storage
+      .from("brand-labels")
+      .upload(imagePath, image.blob, { contentType: image.mimeType, upsert: false });
+    if (uploadError) throw uploadError;
+    const existing = cloudByBrand.get(brand);
+    if (existing) {
+      await supabaseData(
+        supabaseClient.from("brand_labels").update({ image_path: imagePath }).eq("id", existing.id),
+      );
+    } else {
+      await supabaseData(
+        supabaseClient.from("brand_labels").insert({ user_id: userId, brand, image_path: imagePath }),
+      );
+    }
+    const currentLabels = loadPendingLabels();
+    if (currentLabels[brand]?.changedAt === change.changedAt) {
+      delete currentLabels[brand];
+      localStorage.setItem(pendingCloudStorageKey(PENDING_LABELS_KEY), JSON.stringify(currentLabels));
+    }
+  }
+}
+
+async function syncCloudSnapshot() {
+  const userId = authSession.user.id;
+  const snapshot = getCloudMigrationSnapshot();
+  const storeIds = await ensureCloudStores(snapshot, userId);
+  await syncCloudBottles(snapshot, storeIds, userId);
+  await syncCloudVisits(snapshot, storeIds, userId);
+  await syncPendingCloudLabels(userId);
+}
+
+async function runCloudSync() {
+  if (cloudSyncPromise) {
+    cloudSyncQueued = true;
+    return cloudSyncPromise;
+  }
+  if (!isCloudSyncEnabled()) return null;
+  if (navigator.onLine === false) {
+    setCloudSyncState("pending", "通信できるようになったら自動で再試行します。端末内のデータは保存済みです。");
+    return null;
+  }
+
+  cloudSyncPromise = (async () => {
+    setCloudSyncState("syncing", "端末内の変更をクラウドへ保存しています…");
+    try {
+      await syncCloudSnapshot();
+      const time = new Intl.DateTimeFormat("ja-JP", { hour: "2-digit", minute: "2-digit" }).format(new Date());
+      setCloudSyncState("idle", `${time}にクラウド保存を確認しました。`);
+    } catch (error) {
+      console.error("Cloud sync failed", error);
+      setCloudSyncState("pending", "クラウドへ保存できませんでした。端末内には保存済みで、通信回復後に再試行します。");
+    } finally {
+      cloudSyncPromise = null;
+      if (cloudSyncQueued) {
+        cloudSyncQueued = false;
+        scheduleCloudSync(300);
+      }
+    }
+  })();
+
+  return cloudSyncPromise;
 }
 
 async function migrateLocalDataToSupabase() {
@@ -433,6 +891,9 @@ async function migrateLocalDataToSupabase() {
       visits: snapshot.visits.length,
       labels: Object.keys(snapshot.labels).length,
     }));
+    localStorage.setItem(CLOUD_OWNER_KEY, userId);
+    renderCloudSyncState();
+    scheduleCloudSync(0);
     setCloudMigrationStatus(`移行が完了しました。店舗 ${snapshot.stores.length}件、ボトル ${snapshot.bottles.length}件、来店日 ${snapshot.visits.length}件をクラウドで確認できます。端末内データも残っています。`);
   } catch (error) {
     setCloudMigrationStatus(`移行を完了できませんでした：${error.message || "通信状態をご確認ください。"}\n途中まで保存されたデータは、再実行時に重複しないよう確認します。`, true);
@@ -461,6 +922,7 @@ function normalizeBottles(source) {
 
 function saveBottles() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(bottles));
+  scheduleCloudSync();
 }
 
 function loadLabelImages() {
@@ -474,6 +936,7 @@ function loadLabelImages() {
 
 function saveLabelImages() {
   localStorage.setItem(LABELS_KEY, JSON.stringify(labelImages));
+  scheduleCloudSync();
 }
 
 function loadStoreLocations() {
@@ -487,6 +950,7 @@ function loadStoreLocations() {
 
 function saveStoreLocations() {
   localStorage.setItem(STORE_LOCATIONS_KEY, JSON.stringify(storeLocations));
+  scheduleCloudSync();
 }
 
 function loadStoreVisits() {
@@ -518,6 +982,7 @@ function loadStoreVisits() {
 
 function saveStoreVisits() {
   localStorage.setItem(STORE_VISITS_KEY, JSON.stringify(storeVisits));
+  scheduleCloudSync();
 }
 
 function migrateKeepDatesToStoreVisits() {
@@ -661,10 +1126,13 @@ async function restoreBackup(file) {
       return;
     }
 
+    const previousVisits = storeVisits;
     bottles = restored.bottles;
     labelImages = restored.labelImages;
     storeLocations = restored.storeLocations;
     storeVisits = restored.storeVisits;
+    queueRemovedVisitDeletes(previousVisits, storeVisits);
+    Object.keys(labelImages).forEach(queueLabelSync);
     selectedId = null;
     editingHistoryId = null;
     editingVisitId = null;
@@ -707,6 +1175,7 @@ function syncStoreLastVisited(store) {
 
 function recordStoreVisit(store, visitedAt) {
   if (!store || !visitedAt) return false;
+  cancelPendingVisitDelete(store, visitedAt);
   const duplicate = storeVisits.some((visit) => visit.store === store && visit.visitedAt === visitedAt);
   if (duplicate) {
     syncStoreLastVisited(store);
@@ -1063,6 +1532,7 @@ function openVisitEdit(id) {
 function deleteStoreVisit(id) {
   const visit = storeVisits.find((item) => item.id === id);
   if (!visit || !window.confirm(`${formatDate(visit.visitedAt)}の来店履歴を削除しますか？`)) return;
+  queueVisitDelete(visit.store, visit.visitedAt);
   storeVisits = storeVisits.filter((item) => item.id !== id);
   syncStoreLastVisited(visit.store);
   saveStoreVisits();
@@ -1092,6 +1562,7 @@ function openHistoryEdit(id) {
 function deleteHistoryEntry(id, store) {
   const bottle = bottles.find((item) => item.id === id);
   if (!bottle || !window.confirm(`「${bottle.name}」の履歴を削除しますか？`)) return;
+  removePendingRemainingChange(bottle.id);
   bottles = bottles.filter((item) => item.id !== id);
   renumberKeeps();
   saveBottles();
@@ -1122,6 +1593,7 @@ function updateDetailRemaining(value, persist = true) {
   if (persist && selectedId) {
     const selectedBottle = bottles.find((bottle) => bottle.id === selectedId);
     if (!selectedBottle || Number(selectedBottle.remaining) === amount) return;
+    queueRemainingChange(selectedBottle, amount);
     bottles = bottles.map((bottle) => bottle.id === selectedId ? { ...bottle, remaining: amount } : bottle);
     recordStoreVisit(selectedBottle.store, dateToInput());
     saveBottles();
@@ -1138,6 +1610,7 @@ function finishAndOpenNextBottleForm() {
   if (!window.confirm(`「${bottle.name}」を飲み切りにして、次のボトル入力へ進みますか？`)) return;
 
   const today = dateToInput();
+  queueRemainingChange(bottle, 0);
   bottles = bottles.map((item) => item.id === bottle.id ? { ...item, remaining: 0 } : item);
   recordStoreVisit(bottle.store, today);
   saveBottles();
@@ -1405,7 +1878,10 @@ function preparePastForm() {
 els.add.addEventListener("click", () => els.addMenuDialog.showModal());
 els.accountButton.addEventListener("click", () => {
   renderCloudMigrationState();
-  setAuthMessage(authSession ? "Supabaseとの接続を確認済みです。" : "ログインしても、現在の端末内データはまだ変更されません。");
+  renderCloudSyncState();
+  setAuthMessage(authSession
+    ? (isCloudSyncEnabled() ? "Supabaseとの自動保存を利用しています。" : "Supabaseとの接続を確認済みです。")
+    : "ログインしても、現在の端末内データはまだ変更されません。");
   els.authDialog.showModal();
 });
 els.authForm.addEventListener("submit", sendMagicLink);
@@ -1551,6 +2027,7 @@ els.labelManagerForm.addEventListener("submit", async (event) => {
   if (!brand || !file) return;
   try {
     labelImages[brand] = await resizeLabelImage(file);
+    queueLabelSync(brand);
     saveLabelImages();
     render();
     els.labelManagerDialog.close();
@@ -1576,6 +2053,8 @@ els.visitEditForm.addEventListener("submit", (event) => {
     window.alert("同じ日の来店履歴はすでに登録されています。");
     return;
   }
+  queueVisitDelete(visit.store, visit.visitedAt);
+  cancelPendingVisitDelete(visit.store, visitedAt);
   storeVisits = storeVisits.map((item) => (
     item.id === editingVisitId ? { ...item, visitedAt } : item
   ));
@@ -1613,6 +2092,7 @@ els.finishRenew.addEventListener("click", finishAndOpenNextBottleForm);
 els.delete.addEventListener("click", () => {
   const bottle = bottles.find((item) => item.id === selectedId);
   if (!bottle || !window.confirm(`「${bottle.name}」を削除しますか？`)) return;
+  removePendingRemainingChange(bottle.id);
   bottles = bottles.filter((item) => item.id !== selectedId);
   renumberKeeps();
   saveBottles();
@@ -1623,6 +2103,7 @@ document.querySelectorAll(".close-dialog").forEach((button) => button.addEventLi
 
 render();
 initializeSupabaseAuth();
+window.addEventListener("online", () => scheduleCloudSync(0));
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", async () => {
