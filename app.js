@@ -38,6 +38,9 @@ const els = {
   cloudSyncStatus: document.querySelector("#cloud-sync-status"),
   cloudRestoreButton: document.querySelector("#cloud-restore-button"),
   cloudRestoreStatus: document.querySelector("#cloud-restore-status"),
+  cloudUpdateBanner: document.querySelector("#cloud-update-banner"),
+  cloudUpdateSummary: document.querySelector("#cloud-update-summary"),
+  cloudUpdateButton: document.querySelector("#cloud-update-button"),
   list: document.querySelector("#bottle-list"),
   empty: document.querySelector("#empty-state"),
   template: document.querySelector("#bottle-card-template"),
@@ -123,9 +126,12 @@ let cloudSyncPromise = null;
 let cloudSyncQueued = false;
 let cloudSyncState = "idle";
 let cloudSyncPaused = false;
+let cloudUpdateAvailable = false;
+let observedCloudRevision = null;
 renumberKeeps();
 migrateKeepDatesToStoreVisits();
 saveStoreVisits();
+saveStoreLocations();
 
 function setAuthMessage(message, isError = false) {
   els.authMessage.textContent = message;
@@ -139,15 +145,29 @@ function authRedirectUrl() {
   return PUBLIC_APP_URL;
 }
 
+function renderCloudUpdateBanner() {
+  if (!els.cloudUpdateBanner) return;
+  const visible = Boolean(authSession?.user && cloudUpdateAvailable);
+  els.cloudUpdateBanner.hidden = !visible;
+  els.cloudUpdateButton.disabled = !visible;
+}
+
 function renderAuthState(session = null) {
+  const previousUserId = authSession?.user?.id || "";
   authSession = session;
   const connected = Boolean(session?.user);
+  const nextUserId = session?.user?.id || "";
+  if (previousUserId !== nextUserId) {
+    cloudUpdateAvailable = false;
+    observedCloudRevision = nextUserId ? (readCloudMigrationRecord().cloudRevision || null) : null;
+  }
   els.accountDot.classList.toggle("is-connected", connected);
   els.accountStatus.textContent = connected ? "クラウド接続済み" : "クラウド未接続";
   els.authSignedOut.hidden = connected;
   els.authSignedIn.hidden = !connected;
   els.authUserEmail.textContent = session?.user?.email || "";
   if (els.cloudRestoreButton) els.cloudRestoreButton.disabled = !connected;
+  renderCloudUpdateBanner();
   renderCloudMigrationState();
   renderCloudSyncState();
 }
@@ -266,6 +286,123 @@ function cloudMigrationStorageKey() {
   return authSession?.user?.id ? `${CLOUD_MIGRATION_KEY}:${authSession.user.id}` : CLOUD_MIGRATION_KEY;
 }
 
+function readCloudMigrationRecord() {
+  try {
+    const record = JSON.parse(localStorage.getItem(cloudMigrationStorageKey()));
+    return record && typeof record === "object" ? record : {};
+  } catch {
+    return {};
+  }
+}
+
+function sortCanonicalRows(rows) {
+  return rows.sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right), "ja"));
+}
+
+function cloudCoordinate(value) {
+  if (value === null || value === "" || typeof value === "undefined") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function comparableLocation(latitudeValue, longitudeValue, updatedAt = "") {
+  const latitude = cloudCoordinate(latitudeValue);
+  const longitude = cloudCoordinate(longitudeValue);
+  if (latitude === null || longitude === null || (latitude === 0 && longitude === 0)) return [null, null, ""];
+  return [latitude, longitude, updatedAt || ""];
+}
+
+function createCloudRevision(cloudStores, cloudBottles, cloudVisits, cloudLabels) {
+  return JSON.stringify({
+    stores: sortCanonicalRows(cloudStores.map((store) => [
+      store.id,
+      store.name,
+      cloudCoordinate(store.latitude),
+      cloudCoordinate(store.longitude),
+      store.location_updated_at || "",
+    ])),
+    bottles: sortCanonicalRows(cloudBottles.map((bottle) => [
+      bottle.id,
+      bottle.legacy_id || "",
+      bottle.store_id,
+      bottle.brand,
+      Number(bottle.volume_ml) || 900,
+      Number(bottle.current_remaining),
+      bottle.kept_at,
+      bottle.last_visited_at || bottle.kept_at,
+      bottle.status,
+      bottle.notes || "",
+      bottle.last_updated_at || "",
+    ])),
+    visits: sortCanonicalRows(cloudVisits.map((visit) => [visit.id || "", visit.store_id, visit.visited_on])),
+    labels: sortCanonicalRows(cloudLabels.map((label) => [label.id || "", label.brand, label.image_path])),
+  });
+}
+
+function createCloudComparable(cloudStores, cloudBottles, cloudVisits, cloudLabels) {
+  const storeById = new Map(cloudStores.map((store) => [store.id, store]));
+  return JSON.stringify({
+    stores: sortCanonicalRows(cloudStores.map((store) => [store.name, ...comparableLocation(
+      store.latitude,
+      store.longitude,
+      store.location_updated_at,
+    )])),
+    bottles: sortCanonicalRows(cloudBottles.flatMap((bottle) => {
+      const store = storeById.get(bottle.store_id);
+      if (!store || !bottle.legacy_id) return [];
+      return [[
+        String(bottle.legacy_id),
+        store.name,
+        bottle.brand,
+        Number(bottle.volume_ml) || 900,
+        Number(bottle.current_remaining),
+        bottle.kept_at,
+        bottle.last_visited_at || bottle.kept_at,
+        bottle.status,
+        bottle.notes || "",
+      ]];
+    })),
+    visits: sortCanonicalRows(cloudVisits.flatMap((visit) => {
+      const store = storeById.get(visit.store_id);
+      return store ? [[store.name, visit.visited_on]] : [];
+    })),
+    labels: [...new Set(cloudLabels.map((label) => label.brand).filter(Boolean))].sort((left, right) => left.localeCompare(right, "ja")),
+  });
+}
+
+function createLocalComparable() {
+  const snapshot = getCloudMigrationSnapshot();
+  return JSON.stringify({
+    stores: sortCanonicalRows(snapshot.stores.map((store) => {
+      const location = snapshot.locations[store];
+      return [store, ...comparableLocation(location?.latitude, location?.longitude, location?.updatedAt)];
+    })),
+    bottles: sortCanonicalRows(snapshot.bottles.map((bottle) => [
+      String(bottle.id),
+      bottle.store,
+      bottle.name,
+      Number(bottle.volume) || 900,
+      Number(bottle.remaining),
+      bottle.startedAt,
+      bottle.lastVisitedAt || bottle.startedAt,
+      Number(bottle.remaining) > 0 ? "active" : "finished",
+      bottle.notes || "",
+    ])),
+    visits: sortCanonicalRows(snapshot.visits.map((visit) => [visit.store, visit.visitedAt])),
+    labels: Object.keys(snapshot.labels).sort((left, right) => left.localeCompare(right, "ja")),
+  });
+}
+
+function rememberCloudRevision(snapshot) {
+  const previous = readCloudMigrationRecord();
+  observedCloudRevision = snapshot.revision;
+  localStorage.setItem(cloudMigrationStorageKey(), JSON.stringify({
+    ...previous,
+    cloudRevision: snapshot.revision,
+    cloudCheckedAt: new Date().toISOString(),
+  }));
+}
+
 function setCloudMigrationStatus(message, isError = false) {
   els.cloudMigrationStatus.textContent = message;
   els.cloudMigrationStatus.classList.toggle("is-error", isError);
@@ -343,9 +480,9 @@ function setCloudRestoreStatus(message, isError = false) {
 async function fetchCloudRestoreSnapshot() {
   const [cloudStores, cloudBottles, cloudVisits, cloudLabels] = await Promise.all([
     supabaseData(supabaseClient.from("stores").select("id,name,latitude,longitude,location_updated_at")),
-    supabaseData(supabaseClient.from("bottles").select("id,legacy_id,store_id,brand,volume_ml,current_remaining,kept_at,last_visited_at,status,notes")),
+    supabaseData(supabaseClient.from("bottles").select("id,legacy_id,store_id,brand,volume_ml,current_remaining,kept_at,last_visited_at,status,notes,last_updated_at")),
     supabaseData(supabaseClient.from("store_visits").select("id,store_id,visited_on")),
-    supabaseData(supabaseClient.from("brand_labels").select("brand,image_path")),
+    supabaseData(supabaseClient.from("brand_labels").select("id,brand,image_path")),
   ]);
   const storeById = new Map(cloudStores.map((store) => [store.id, store]));
   const restoredBottles = cloudBottles.flatMap((bottle) => {
@@ -372,9 +509,9 @@ async function fetchCloudRestoreSnapshot() {
     return [{ id: String(visit.id || crypto.randomUUID()), store: store.name, visitedAt: visit.visited_on }];
   });
   const restoredLocations = Object.fromEntries(cloudStores.flatMap((store) => {
-    const latitude = Number(store.latitude);
-    const longitude = Number(store.longitude);
-    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return [];
+    const latitude = cloudCoordinate(store.latitude);
+    const longitude = cloudCoordinate(store.longitude);
+    if (latitude === null || longitude === null || (latitude === 0 && longitude === 0)) return [];
     return [[store.name, {
       latitude,
       longitude,
@@ -388,7 +525,38 @@ async function fetchCloudRestoreSnapshot() {
     storeLocations: restoredLocations,
     labelRows: cloudLabels,
     storeCount: cloudStores.length,
+    revision: createCloudRevision(cloudStores, cloudBottles, cloudVisits, cloudLabels),
+    comparable: createCloudComparable(cloudStores, cloudBottles, cloudVisits, cloudLabels),
   };
+}
+
+function setCloudUpdateAvailability(isAvailable, snapshot = null) {
+  cloudUpdateAvailable = isAvailable;
+  if (snapshot && els.cloudUpdateSummary) {
+    els.cloudUpdateSummary.textContent = `店舗 ${snapshot.storeCount}件・ボトル ${snapshot.bottles.length}件・来店日 ${snapshot.storeVisits.length}件を確認しました。`;
+  }
+  if (isAvailable) {
+    window.clearTimeout(cloudSyncTimer);
+    cloudSyncTimer = null;
+  }
+  renderCloudUpdateBanner();
+  renderCloudSyncState();
+}
+
+async function inspectCloudUpdates() {
+  const snapshot = await fetchCloudRestoreSnapshot();
+  const hasUpdate = observedCloudRevision
+    ? observedCloudRevision !== snapshot.revision
+    : snapshot.comparable !== createLocalComparable();
+
+  if (hasUpdate) {
+    setCloudUpdateAvailability(true, snapshot);
+    return { safeToSync: false, snapshot };
+  }
+
+  rememberCloudRevision(snapshot);
+  setCloudUpdateAvailability(false);
+  return { safeToSync: true, snapshot };
 }
 
 async function downloadCloudLabelImages(labelRows) {
@@ -426,6 +594,7 @@ async function restoreFromSupabase() {
   cloudSyncTimer = null;
   cloudSyncQueued = false;
   els.cloudRestoreButton.disabled = true;
+  if (els.cloudUpdateButton) els.cloudUpdateButton.disabled = true;
   setCloudRestoreStatus("クラウドの保存内容を確認しています…");
   try {
     if (isCloudSyncEnabled()) {
@@ -487,7 +656,11 @@ async function restoreFromSupabase() {
       bottles: bottles.length,
       visits: storeVisits.length,
       labels: Object.keys(labelImages).length,
+      cloudRevision: restored.revision,
+      cloudCheckedAt: completedAt,
     }));
+    observedCloudRevision = restored.revision;
+    setCloudUpdateAvailability(false);
     selectedId = null;
     editingHistoryId = null;
     editingVisitId = null;
@@ -503,6 +676,7 @@ async function restoreFromSupabase() {
   } finally {
     cloudSyncPaused = previousCloudSyncPaused;
     els.cloudRestoreButton.disabled = !authSession?.user;
+    renderCloudUpdateBanner();
     if (shouldSyncAfterRestore && !previousCloudSyncPaused) scheduleCloudSync(0);
   }
 }
@@ -536,7 +710,7 @@ function isCloudSyncEnabled() {
 function setCloudSyncState(state, message) {
   cloudSyncState = state;
   const connected = Boolean(authSession?.user);
-  els.accountDot.classList.toggle("is-pending", connected && state === "pending");
+  els.accountDot.classList.toggle("is-pending", connected && (state === "pending" || state === "update"));
   if (!connected) {
     if (els.cloudSyncStatus) els.cloudSyncStatus.textContent = "";
     return;
@@ -545,13 +719,15 @@ function setCloudSyncState(state, message) {
   const statusLabels = {
     disabled: "クラウド接続済み",
     idle: "クラウド同期済み",
+    checking: "クラウド確認中",
     syncing: "クラウド同期中",
     pending: "同期待ち",
+    update: "クラウド更新あり",
   };
   els.accountStatus.textContent = statusLabels[state] || "クラウド接続済み";
   if (els.cloudSyncStatus) {
     els.cloudSyncStatus.textContent = message || "";
-    els.cloudSyncStatus.classList.toggle("is-pending", state === "pending");
+    els.cloudSyncStatus.classList.toggle("is-pending", state === "pending" || state === "update");
   }
 }
 
@@ -566,7 +742,11 @@ function renderCloudSyncState() {
     return;
   }
   localStorage.setItem(CLOUD_OWNER_KEY, authSession.user.id);
-  if (cloudSyncState === "syncing") {
+  if (cloudUpdateAvailable) {
+    setCloudSyncState("update", "別の端末で新しい変更が見つかりました。確認してからこの端末へ読み込めます。");
+  } else if (cloudSyncState === "checking") {
+    setCloudSyncState("checking", "クラウドに新しい変更がないか確認しています…");
+  } else if (cloudSyncState === "syncing") {
     setCloudSyncState("syncing", "端末内の変更をクラウドへ保存しています…");
   } else if (cloudSyncState === "pending") {
     setCloudSyncState("pending", "通信できるようになったら自動で再試行します。端末内のデータは保存済みです。");
@@ -649,7 +829,7 @@ function queueLabelSync(brand) {
 }
 
 function scheduleCloudSync(delay = 700) {
-  if (cloudSyncPaused || !isCloudSyncEnabled()) return;
+  if (cloudSyncPaused || cloudUpdateAvailable || !isCloudSyncEnabled()) return;
   if (navigator.onLine === false) {
     setCloudSyncState("pending", "通信できるようになったら自動で再試行します。端末内のデータは保存済みです。");
     return;
@@ -659,7 +839,7 @@ function scheduleCloudSync(delay = 700) {
     return;
   }
   window.clearTimeout(cloudSyncTimer);
-  setCloudSyncState("syncing", "端末内の変更をクラウドへ保存しています…");
+  setCloudSyncState("checking", "クラウドに新しい変更がないか確認しています…");
   cloudSyncTimer = window.setTimeout(() => {
     cloudSyncTimer = null;
     runCloudSync();
@@ -694,8 +874,8 @@ async function ensureCloudStores(snapshot, userId) {
   for (const [store, location] of Object.entries(snapshot.locations)) {
     const cloudStore = storeByName.get(store);
     if (!cloudStore || !location) continue;
-    const hasChanged = Number(cloudStore.latitude) !== Number(location.latitude)
-      || Number(cloudStore.longitude) !== Number(location.longitude)
+    const hasChanged = cloudCoordinate(cloudStore.latitude) !== cloudCoordinate(location.latitude)
+      || cloudCoordinate(cloudStore.longitude) !== cloudCoordinate(location.longitude)
       || (location.updatedAt && cloudStore.location_updated_at !== location.updatedAt);
     if (!hasChanged) continue;
     await supabaseData(
@@ -919,6 +1099,7 @@ async function runCloudSync() {
     cloudSyncQueued = true;
     return cloudSyncPromise;
   }
+  if (cloudUpdateAvailable) return null;
   if (!isCloudSyncEnabled()) return null;
   if (navigator.onLine === false) {
     setCloudSyncState("pending", "通信できるようになったら自動で再試行します。端末内のデータは保存済みです。");
@@ -926,9 +1107,19 @@ async function runCloudSync() {
   }
 
   cloudSyncPromise = (async () => {
-    setCloudSyncState("syncing", "端末内の変更をクラウドへ保存しています…");
+    setCloudSyncState("checking", "クラウドに新しい変更がないか確認しています…");
     try {
+      const inspection = await inspectCloudUpdates();
+      if (!inspection.safeToSync) return;
+      setCloudSyncState("syncing", "端末内の変更をクラウドへ保存しています…");
       await syncCloudSnapshot();
+      const syncedSnapshot = await fetchCloudRestoreSnapshot();
+      if (syncedSnapshot.comparable !== createLocalComparable()) {
+        setCloudUpdateAvailability(true, syncedSnapshot);
+        return;
+      }
+      rememberCloudRevision(syncedSnapshot);
+      setCloudUpdateAvailability(false);
       const time = new Intl.DateTimeFormat("ja-JP", { hour: "2-digit", minute: "2-digit" }).format(new Date());
       setCloudSyncState("idle", `${time}にクラウド保存を確認しました。`);
     } catch (error) {
@@ -1128,7 +1319,13 @@ function saveLabelImages() {
 function loadStoreLocations() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORE_LOCATIONS_KEY));
-    return saved && typeof saved === "object" ? saved : {};
+    if (!saved || typeof saved !== "object" || Array.isArray(saved)) return {};
+    return Object.fromEntries(Object.entries(saved).flatMap(([store, location]) => {
+      const latitude = cloudCoordinate(location?.latitude);
+      const longitude = cloudCoordinate(location?.longitude);
+      if (!store || latitude === null || longitude === null || (latitude === 0 && longitude === 0)) return [];
+      return [[store, { ...location, latitude, longitude }]];
+    }));
   } catch {
     return {};
   }
@@ -1279,9 +1476,9 @@ function parseBackupData(backup) {
     : {};
   const restoredStoreLocations = data.storeLocations && typeof data.storeLocations === "object"
     ? Object.fromEntries(Object.entries(data.storeLocations).flatMap(([store, location]) => {
-      const latitude = Number(location?.latitude);
-      const longitude = Number(location?.longitude);
-      if (!store || !Number.isFinite(latitude) || !Number.isFinite(longitude)) return [];
+      const latitude = cloudCoordinate(location?.latitude);
+      const longitude = cloudCoordinate(location?.longitude);
+      if (!store || latitude === null || longitude === null || (latitude === 0 && longitude === 0)) return [];
       return [[store.slice(0, 40), {
         latitude,
         longitude,
@@ -2074,6 +2271,7 @@ els.authForm.addEventListener("submit", sendMagicLink);
 els.authSignOut.addEventListener("click", signOutFromSupabase);
 els.cloudMigrationButton.addEventListener("click", migrateLocalDataToSupabase);
 els.cloudRestoreButton.addEventListener("click", restoreFromSupabase);
+els.cloudUpdateButton.addEventListener("click", restoreFromSupabase);
 els.openCurrentAdd.addEventListener("click", () => {
   els.addMenuDialog.close();
   prepareCurrentForm();
@@ -2291,6 +2489,9 @@ document.querySelectorAll(".close-dialog").forEach((button) => button.addEventLi
 render();
 initializeSupabaseAuth();
 window.addEventListener("online", () => scheduleCloudSync(0));
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") scheduleCloudSync(0);
+});
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", async () => {
