@@ -36,6 +36,8 @@ const els = {
   cloudMigrationButton: document.querySelector("#cloud-migration-button"),
   cloudMigrationStatus: document.querySelector("#cloud-migration-status"),
   cloudSyncStatus: document.querySelector("#cloud-sync-status"),
+  cloudRestoreButton: document.querySelector("#cloud-restore-button"),
+  cloudRestoreStatus: document.querySelector("#cloud-restore-status"),
   list: document.querySelector("#bottle-list"),
   empty: document.querySelector("#empty-state"),
   template: document.querySelector("#bottle-card-template"),
@@ -120,6 +122,7 @@ let cloudSyncTimer = null;
 let cloudSyncPromise = null;
 let cloudSyncQueued = false;
 let cloudSyncState = "idle";
+let cloudSyncPaused = false;
 renumberKeeps();
 migrateKeepDatesToStoreVisits();
 saveStoreVisits();
@@ -144,6 +147,7 @@ function renderAuthState(session = null) {
   els.authSignedOut.hidden = connected;
   els.authSignedIn.hidden = !connected;
   els.authUserEmail.textContent = session?.user?.email || "";
+  if (els.cloudRestoreButton) els.cloudRestoreButton.disabled = !connected;
   renderCloudMigrationState();
   renderCloudSyncState();
 }
@@ -176,7 +180,7 @@ async function initializeSupabaseAuth() {
           setAuthMessage("ログインできました。端末内の変更をクラウドへ確認します。");
           scheduleCloudSync(0);
         } else {
-          setAuthMessage("ログインできました。現在の端末内データはまだ移行していません。");
+          setAuthMessage("ログインできました。クラウドから読み込むか、この端末のデータをクラウドへ移行できます。");
         }
       }
     });
@@ -321,6 +325,188 @@ function dataUrlToImageFile(dataUrl) {
   return { blob: new Blob([values], { type: mimeType }), extension, mimeType };
 }
 
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => resolve(reader.result));
+    reader.addEventListener("error", () => reject(new Error("ラベル画像を端末用に変換できませんでした。")));
+    reader.readAsDataURL(blob);
+  });
+}
+
+function setCloudRestoreStatus(message, isError = false) {
+  if (!els.cloudRestoreStatus) return;
+  els.cloudRestoreStatus.textContent = message;
+  els.cloudRestoreStatus.classList.toggle("is-error", isError);
+}
+
+async function fetchCloudRestoreSnapshot() {
+  const [cloudStores, cloudBottles, cloudVisits, cloudLabels] = await Promise.all([
+    supabaseData(supabaseClient.from("stores").select("id,name,latitude,longitude,location_updated_at")),
+    supabaseData(supabaseClient.from("bottles").select("id,legacy_id,store_id,brand,volume_ml,current_remaining,kept_at,last_visited_at,status,notes")),
+    supabaseData(supabaseClient.from("store_visits").select("id,store_id,visited_on")),
+    supabaseData(supabaseClient.from("brand_labels").select("brand,image_path")),
+  ]);
+  const storeById = new Map(cloudStores.map((store) => [store.id, store]));
+  const restoredBottles = cloudBottles.flatMap((bottle) => {
+    const store = storeById.get(bottle.store_id);
+    if (!store || !bottle.legacy_id || !bottle.brand || !bottle.kept_at) return [];
+    return [{
+      id: String(bottle.legacy_id),
+      store: store.name,
+      name: bottle.brand,
+      volume: Number(bottle.volume_ml) || 900,
+      remaining: Math.min(100, Math.max(0, Number(bottle.current_remaining))),
+      startedAt: bottle.kept_at,
+      lastVisitedAt: bottle.last_visited_at || bottle.kept_at,
+      notes: bottle.notes || "",
+      keepNumber: 1,
+    }];
+  });
+  const visitKeys = new Set();
+  const restoredVisits = cloudVisits.flatMap((visit) => {
+    const store = storeById.get(visit.store_id);
+    const key = `${store?.name || ""}\u0000${visit.visited_on}`;
+    if (!store || !visit.visited_on || visitKeys.has(key)) return [];
+    visitKeys.add(key);
+    return [{ id: String(visit.id || crypto.randomUUID()), store: store.name, visitedAt: visit.visited_on }];
+  });
+  const restoredLocations = Object.fromEntries(cloudStores.flatMap((store) => {
+    const latitude = Number(store.latitude);
+    const longitude = Number(store.longitude);
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return [];
+    return [[store.name, {
+      latitude,
+      longitude,
+      updatedAt: store.location_updated_at || "",
+    }]];
+  }));
+
+  return {
+    bottles: restoredBottles,
+    storeVisits: restoredVisits,
+    storeLocations: restoredLocations,
+    labelRows: cloudLabels,
+    storeCount: cloudStores.length,
+  };
+}
+
+async function downloadCloudLabelImages(labelRows) {
+  const images = {};
+  for (let index = 0; index < labelRows.length; index += 1) {
+    const label = labelRows[index];
+    setCloudRestoreStatus(`ラベル画像を読み込んでいます（${index + 1}/${labelRows.length}）…`);
+    const { data, error } = await supabaseClient.storage.from("brand-labels").download(label.image_path);
+    if (error) throw error;
+    images[label.brand] = await blobToDataUrl(data);
+  }
+  return images;
+}
+
+function clearPendingCloudChanges() {
+  [PENDING_REMAINING_KEY, PENDING_VISIT_DELETES_KEY, PENDING_LABELS_KEY].forEach((baseKey) => {
+    localStorage.removeItem(pendingCloudStorageKey(baseKey));
+  });
+}
+
+async function restoreFromSupabase() {
+  if (!supabaseClient || !authSession?.user) {
+    setCloudRestoreStatus("先にクラウドへログインしてください。", true);
+    return;
+  }
+  if (navigator.onLine === false) {
+    setCloudRestoreStatus("通信できる状態でお試しください。", true);
+    return;
+  }
+
+  const previousCloudSyncPaused = cloudSyncPaused;
+  let shouldSyncAfterRestore = false;
+  cloudSyncPaused = true;
+  window.clearTimeout(cloudSyncTimer);
+  cloudSyncTimer = null;
+  cloudSyncQueued = false;
+  els.cloudRestoreButton.disabled = true;
+  setCloudRestoreStatus("クラウドの保存内容を確認しています…");
+  try {
+    if (isCloudSyncEnabled()) {
+      await runCloudSync();
+      if (cloudSyncState === "pending") {
+        throw new Error("端末内の変更がまだクラウドへ保存できていません。通信状態をご確認ください。");
+      }
+    }
+
+    const restored = await fetchCloudRestoreSnapshot();
+    const itemCount = restored.storeCount + restored.bottles.length + restored.storeVisits.length + restored.labelRows.length;
+    if (itemCount === 0) {
+      setCloudRestoreStatus("このアカウントには読み込めるクラウドデータがありません。", true);
+      return;
+    }
+    const confirmed = window.confirm(
+      `クラウドのデータをこの端末へ読み込みますか？\n\n`
+      + `店舗 ${restored.storeCount}件・ボトル ${restored.bottles.length}件・来店日 ${restored.storeVisits.length}件・ラベル ${restored.labelRows.length}件\n\n`
+      + `現在の端末内データは、このクラウド内容に置き換わります。`,
+    );
+    if (!confirmed) {
+      setCloudRestoreStatus("読み込みをキャンセルしました。");
+      return;
+    }
+
+    const restoredLabels = await downloadCloudLabelImages(restored.labelRows);
+    const previousState = { bottles, labelImages, storeLocations, storeVisits };
+    const storageKeys = [STORAGE_KEY, LABELS_KEY, STORE_LOCATIONS_KEY, STORE_VISITS_KEY, KEEP_VISITS_MIGRATION_KEY];
+    const previousStorage = new Map(storageKeys.map((key) => [key, localStorage.getItem(key)]));
+    try {
+      bottles = normalizeBottles(restored.bottles);
+      labelImages = restoredLabels;
+      storeLocations = restored.storeLocations;
+      storeVisits = restored.storeVisits;
+      renumberKeeps();
+      localStorage.removeItem(KEEP_VISITS_MIGRATION_KEY);
+      migrateKeepDatesToStoreVisits();
+      new Set(bottles.map((bottle) => bottle.store)).forEach(syncStoreLastVisited);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(bottles));
+      localStorage.setItem(LABELS_KEY, JSON.stringify(labelImages));
+      localStorage.setItem(STORE_LOCATIONS_KEY, JSON.stringify(storeLocations));
+      localStorage.setItem(STORE_VISITS_KEY, JSON.stringify(storeVisits));
+    } catch (error) {
+      ({ bottles, labelImages, storeLocations, storeVisits } = previousState);
+      previousStorage.forEach((value, key) => {
+        if (value === null) localStorage.removeItem(key);
+        else localStorage.setItem(key, value);
+      });
+      throw error;
+    }
+
+    clearPendingCloudChanges();
+    const completedAt = new Date().toISOString();
+    localStorage.setItem(CLOUD_OWNER_KEY, authSession.user.id);
+    localStorage.setItem(cloudMigrationStorageKey(), JSON.stringify({
+      completedAt,
+      restoredFromCloud: true,
+      stores: restored.storeCount,
+      bottles: bottles.length,
+      visits: storeVisits.length,
+      labels: Object.keys(labelImages).length,
+    }));
+    selectedId = null;
+    editingHistoryId = null;
+    editingVisitId = null;
+    calendarMonth = null;
+    nearbyStoreDistances = null;
+    render();
+    renderCloudMigrationState();
+    renderCloudSyncState();
+    setCloudRestoreStatus(`読み込みが完了しました。ボトル ${bottles.length}件・来店日 ${storeVisits.length}件です。`);
+    shouldSyncAfterRestore = true;
+  } catch (error) {
+    setCloudRestoreStatus(error.message || "クラウドからデータを読み込めませんでした。", true);
+  } finally {
+    cloudSyncPaused = previousCloudSyncPaused;
+    els.cloudRestoreButton.disabled = !authSession?.user;
+    if (shouldSyncAfterRestore && !previousCloudSyncPaused) scheduleCloudSync(0);
+  }
+}
+
 function readStoredObject(key) {
   try {
     const value = JSON.parse(localStorage.getItem(key));
@@ -376,7 +562,7 @@ function renderCloudSyncState() {
     return;
   }
   if (!isCloudSyncEnabled()) {
-    setCloudSyncState("disabled", "初回移行が完了すると、以後の変更を自動でクラウドへ保存します。");
+    setCloudSyncState("disabled", "初回移行またはクラウド読み込みが完了すると、以後の変更を自動でクラウドへ保存します。");
     return;
   }
   localStorage.setItem(CLOUD_OWNER_KEY, authSession.user.id);
@@ -463,7 +649,7 @@ function queueLabelSync(brand) {
 }
 
 function scheduleCloudSync(delay = 700) {
-  if (!isCloudSyncEnabled()) return;
+  if (cloudSyncPaused || !isCloudSyncEnabled()) return;
   if (navigator.onLine === false) {
     setCloudSyncState("pending", "通信できるようになったら自動で再試行します。端末内のデータは保存済みです。");
     return;
@@ -1887,6 +2073,7 @@ els.accountButton.addEventListener("click", () => {
 els.authForm.addEventListener("submit", sendMagicLink);
 els.authSignOut.addEventListener("click", signOutFromSupabase);
 els.cloudMigrationButton.addEventListener("click", migrateLocalDataToSupabase);
+els.cloudRestoreButton.addEventListener("click", restoreFromSupabase);
 els.openCurrentAdd.addEventListener("click", () => {
   els.addMenuDialog.close();
   prepareCurrentForm();
