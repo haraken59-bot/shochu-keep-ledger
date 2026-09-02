@@ -43,6 +43,10 @@ const els = {
   cloudUpdateSummary: document.querySelector("#cloud-update-summary"),
   cloudUpdateChanges: document.querySelector("#cloud-update-changes"),
   cloudUpdateButton: document.querySelector("#cloud-update-button"),
+  nearbyStoresSection: document.querySelector("#nearby-stores-section"),
+  findNearbyStores: document.querySelector("#find-nearby-stores"),
+  nearbyStoresStatus: document.querySelector("#nearby-stores-status"),
+  nearbyStoresList: document.querySelector("#nearby-stores-list"),
   list: document.querySelector("#bottle-list"),
   empty: document.querySelector("#empty-state"),
   template: document.querySelector("#bottle-card-template"),
@@ -61,6 +65,7 @@ const els = {
   nearbyStoreStatus: document.querySelector("#nearby-store-status"),
   nameSelect: document.querySelector("#name-select"),
   newName: document.querySelector("#name-new"),
+  scanLabelFromForm: document.querySelector("#scan-label-from-form"),
   previousKeepInfo: document.querySelector("#previous-keep-info"),
   pastForm: document.querySelector("#past-bottle-form"),
   pastFormDialog: document.querySelector("#past-bottle-dialog"),
@@ -109,6 +114,28 @@ const els = {
   historyEditNewStore: document.querySelector("#history-edit-store-new"),
   historyEditNameSelect: document.querySelector("#history-edit-name-select"),
   historyEditNewName: document.querySelector("#history-edit-name-new"),
+  quickVisitDialog: document.querySelector("#quick-visit-dialog"),
+  quickVisitTitle: document.querySelector("#quick-visit-title"),
+  quickVisitLast: document.querySelector("#quick-visit-last"),
+  quickVisitStatus: document.querySelector("#quick-visit-status"),
+  quickBottleList: document.querySelector("#quick-bottle-list"),
+  quickVisitToday: document.querySelector("#quick-visit-today"),
+  quickScanLabel: document.querySelector("#quick-scan-label"),
+  quickOpenHistory: document.querySelector("#quick-open-history"),
+  ocrDialog: document.querySelector("#ocr-dialog"),
+  ocrImageFile: document.querySelector("#ocr-image-file"),
+  ocrPreview: document.querySelector("#ocr-preview"),
+  ocrProgressWrap: document.querySelector("#ocr-progress-wrap"),
+  ocrProgress: document.querySelector("#ocr-progress"),
+  ocrStatus: document.querySelector("#ocr-status"),
+  ocrCandidates: document.querySelector("#ocr-candidates"),
+  ocrSaveLabelRow: document.querySelector("#ocr-save-label-row"),
+  ocrSaveLabel: document.querySelector("#ocr-save-label"),
+  ocrTextDetails: document.querySelector("#ocr-text-details"),
+  ocrText: document.querySelector("#ocr-text"),
+  ocrNone: document.querySelector("#ocr-none"),
+  ocrManual: document.querySelector("#ocr-manual"),
+  ocrRetake: document.querySelector("#ocr-retake"),
 };
 
 let bottles = normalizeBottles(loadBottles());
@@ -134,6 +161,12 @@ let observedCloudComparable = null;
 let cloudUpdateMode = "";
 let cloudUpdateMessages = [];
 let pendingCloudSnapshot = null;
+let nearbyHomePosition = null;
+let currentQuickStore = "";
+let ocrTarget = null;
+let ocrSourceFile = null;
+let ocrPreviewUrl = "";
+let ocrRunning = false;
 renumberKeeps();
 migrateKeepDatesToStoreVisits();
 saveStoreVisits();
@@ -1783,6 +1816,82 @@ function setLocationStatus(element, message, isError = false) {
   element.classList.toggle("is-error", isError);
 }
 
+function registeredStoreLocations() {
+  const registeredStores = new Set(bottles.map((bottle) => bottle.store));
+  return Object.entries(storeLocations)
+    .filter(([store, location]) => (
+      registeredStores.has(store)
+      && Number.isFinite(Number(location?.latitude))
+      && Number.isFinite(Number(location?.longitude))
+    ));
+}
+
+function renderNearbyStoreCandidates(position) {
+  els.nearbyStoresList.replaceChildren();
+  const candidates = registeredStoreLocations()
+    .map(([store, location]) => ({ store, distance: distanceInMeters(position, location) }))
+    .sort((a, b) => a.distance - b.distance);
+  const nearby = candidates.filter((candidate) => candidate.distance <= 1000).slice(0, 5);
+
+  if (nearby.length === 0) {
+    const nearest = candidates[0];
+    setLocationStatus(
+      els.nearbyStoresStatus,
+      nearest
+        ? `1km以内に登録店がありません。最寄りは「${nearest.store}」（約${formatDistance(nearest.distance)}）です。`
+        : "場所を登録した店舗がありません。店舗履歴から現在地を登録できます。",
+      true,
+    );
+    return;
+  }
+
+  nearby.forEach(({ store, distance }) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "nearby-store-candidate";
+    const name = document.createElement("strong");
+    name.textContent = store;
+    const distanceText = document.createElement("span");
+    distanceText.textContent = `現在地から約${formatDistance(distance)}`;
+    button.append(name, distanceText);
+    button.addEventListener("click", () => openQuickVisit(store));
+    els.nearbyStoresList.append(button);
+  });
+  setLocationStatus(
+    els.nearbyStoresStatus,
+    `1km以内の候補を${nearby.length}件表示しています。店名を押して選んでください。${position.accuracy > 200 ? `（位置精度 約${formatDistance(position.accuracy)}）` : ""}`,
+  );
+}
+
+async function findNearbyStoresForHome({ silent = false } = {}) {
+  if (registeredStoreLocations().length === 0) {
+    els.nearbyStoresList.replaceChildren();
+    setLocationStatus(els.nearbyStoresStatus, "場所を登録した店舗がありません。店舗履歴から現在地を登録できます。", true);
+    return;
+  }
+  els.findNearbyStores.disabled = true;
+  if (!silent) setLocationStatus(els.nearbyStoresStatus, "現在地を確認しています…");
+  try {
+    nearbyHomePosition = await requestCurrentPosition();
+    renderNearbyStoreCandidates(nearbyHomePosition);
+  } catch (error) {
+    els.nearbyStoresList.replaceChildren();
+    setLocationStatus(els.nearbyStoresStatus, `${error.message} 下の店舗一覧はそのまま利用できます。`, true);
+  } finally {
+    els.findNearbyStores.disabled = false;
+  }
+}
+
+async function tryAutomaticNearbyStores() {
+  if (!navigator.permissions?.query) return;
+  try {
+    const permission = await navigator.permissions.query({ name: "geolocation" });
+    if (permission.state === "granted") await findNearbyStoresForHome({ silent: true });
+  } catch {
+    // SafariなどPermissions APIが利用できない環境では、ボタン操作に任せる。
+  }
+}
+
 function getStoreBrandKey(store, name) {
   return `${store}\u0000${name}`;
 }
@@ -1894,7 +2003,7 @@ function render() {
     headingVisit.className = "store-last-visit";
     headingVisit.textContent = storeVisitText(store);
     heading.append(headingName, headingVisit);
-    heading.addEventListener("click", () => openStoreHistory(store));
+    heading.addEventListener("click", () => openQuickVisit(store));
     const groupList = document.createElement("div");
     groupList.className = "store-group-list";
     group.append(heading, groupList);
@@ -1933,6 +2042,7 @@ function render() {
 
     els.list.append(group);
   });
+  if (nearbyHomePosition) renderNearbyStoreCandidates(nearbyHomePosition);
 }
 
 function monthStartFromDate(dateText) {
@@ -2012,6 +2122,85 @@ function moveCalendarMonth(offset) {
   if (!store || !calendarMonth) return;
   calendarMonth = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + offset, 1);
   renderStoreVisitCalendar(store);
+}
+
+function renderQuickVisit(store) {
+  currentQuickStore = store;
+  const latestVisit = latestStoreVisitDate(store);
+  els.quickVisitTitle.textContent = store;
+  els.quickVisitLast.textContent = latestVisit
+    ? `最終来店 ${formatDate(latestVisit)}・${storeVisitText(store)}`
+    : "来店日の記録はありません";
+  els.quickBottleList.replaceChildren();
+
+  const activeBottles = bottles
+    .filter((bottle) => bottle.store === store && isActive(bottle))
+    .sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+  if (activeBottles.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "quick-empty";
+    empty.textContent = "現在キープ中のボトルはありません。";
+    els.quickBottleList.append(empty);
+    return;
+  }
+
+  activeBottles.forEach((bottle) => {
+    const card = document.createElement("article");
+    card.className = "quick-bottle-card";
+    const heading = document.createElement("div");
+    heading.className = "quick-bottle-heading";
+    const name = document.createElement("strong");
+    name.textContent = `${bottle.name}（${bottle.keepNumber}回目）`;
+    const amount = document.createElement("output");
+    amount.textContent = `${bottle.remaining}%`;
+    heading.append(name, amount);
+
+    const range = document.createElement("input");
+    range.type = "range";
+    range.min = "0";
+    range.max = "100";
+    range.step = "5";
+    range.value = String(bottle.remaining);
+    range.setAttribute("aria-label", `${bottle.name}の残量`);
+    const controls = document.createElement("div");
+    controls.className = "quick-bottle-controls";
+    const decrease = document.createElement("button");
+    decrease.type = "button";
+    decrease.textContent = "−10%";
+    const increase = document.createElement("button");
+    increase.type = "button";
+    increase.textContent = "＋10%";
+    const save = document.createElement("button");
+    save.type = "button";
+    save.className = "primary-button quick-save-button";
+    save.textContent = "この残量で保存";
+    const updateAmount = (value) => {
+      const next = Math.min(100, Math.max(0, Number(value)));
+      range.value = String(next);
+      amount.textContent = `${next}%`;
+    };
+    range.addEventListener("input", () => updateAmount(range.value));
+    decrease.addEventListener("click", () => updateAmount(Number(range.value) - 10));
+    increase.addEventListener("click", () => updateAmount(Number(range.value) + 10));
+    save.addEventListener("click", () => {
+      if (!saveBottleRemaining(bottle.id, range.value)) {
+        els.quickVisitStatus.textContent = "残量は変更されていません。";
+        return;
+      }
+      els.quickVisitStatus.textContent = `${bottle.name}を${range.value}%で保存し、本日を来店日に記録しました。`;
+      renderQuickVisit(store);
+    });
+    controls.append(decrease, increase);
+    card.append(heading, range, controls, save);
+    els.quickBottleList.append(card);
+  });
+}
+
+function openQuickVisit(store) {
+  if (!store) return;
+  els.quickVisitStatus.textContent = "";
+  renderQuickVisit(store);
+  if (!els.quickVisitDialog.open) els.quickVisitDialog.showModal();
 }
 
 function openStoreHistory(store) {
@@ -2131,6 +2320,18 @@ function openDetail(id) {
   els.detailDialog.showModal();
 }
 
+function saveBottleRemaining(id, value) {
+  const amount = Math.min(100, Math.max(0, Number(value)));
+  const bottle = bottles.find((item) => item.id === id);
+  if (!bottle || Number(bottle.remaining) === amount) return false;
+  queueRemainingChange(bottle, amount);
+  bottles = bottles.map((item) => item.id === id ? { ...item, remaining: amount } : item);
+  recordStoreVisit(bottle.store, dateToInput());
+  saveBottles();
+  render();
+  return true;
+}
+
 function updateDetailRemaining(value, persist = true) {
   const amount = Math.min(100, Math.max(0, Number(value)));
   els.range.value = amount;
@@ -2138,15 +2339,10 @@ function updateDetailRemaining(value, persist = true) {
   els.detailProgress.style.width = `${amount}%`;
   if (persist && selectedId) {
     const selectedBottle = bottles.find((bottle) => bottle.id === selectedId);
-    if (!selectedBottle || Number(selectedBottle.remaining) === amount) return;
-    queueRemainingChange(selectedBottle, amount);
-    bottles = bottles.map((bottle) => bottle.id === selectedId ? { ...bottle, remaining: amount } : bottle);
-    recordStoreVisit(selectedBottle.store, dateToInput());
-    saveBottles();
+    if (!selectedBottle || !saveBottleRemaining(selectedId, amount)) return;
     const updatedBottle = bottles.find((bottle) => bottle.id === selectedId);
     els.detailLastVisited.textContent = formatDate(latestStoreVisitDate(selectedBottle.store));
     els.detailDays.textContent = visitText(updatedBottle);
-    render();
   }
 }
 
@@ -2273,6 +2469,321 @@ function resizeLabelImage(file) {
     };
     reader.readAsDataURL(file);
   });
+}
+
+function registeredBrands() {
+  return [...new Set([
+    ...bottles.map((bottle) => bottle.name.trim()),
+    ...Object.keys(labelImages).map((brand) => brand.trim()),
+  ].filter(Boolean))].sort((a, b) => a.localeCompare(b, "ja"));
+}
+
+function normalizeOcrText(value) {
+  return String(value || "")
+    .normalize("NFKC")
+    .toLocaleLowerCase("ja")
+    .replace(/[^\p{L}\p{N}]+/gu, "");
+}
+
+function levenshteinDistance(left, right) {
+  if (left === right) return 0;
+  if (!left.length) return right.length;
+  if (!right.length) return left.length;
+  let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let row = 1; row <= left.length; row += 1) {
+    const current = [row];
+    for (let column = 1; column <= right.length; column += 1) {
+      current[column] = Math.min(
+        current[column - 1] + 1,
+        previous[column] + 1,
+        previous[column - 1] + (left[row - 1] === right[column - 1] ? 0 : 1),
+      );
+    }
+    previous = current;
+  }
+  return previous[right.length];
+}
+
+function brandMatchScore(brand, text) {
+  const target = normalizeOcrText(brand);
+  const compact = normalizeOcrText(text);
+  if (!target || !compact) return 0;
+  if (compact.includes(target)) return 1;
+
+  const lines = String(text || "").split(/\r?\n/).map(normalizeOcrText).filter(Boolean);
+  const samples = new Set(lines);
+  const minimumLength = Math.max(1, target.length - 1);
+  const maximumLength = Math.min(compact.length, target.length + 2);
+  for (let length = minimumLength; length <= maximumLength; length += 1) {
+    for (let index = 0; index + length <= compact.length; index += 1) {
+      samples.add(compact.slice(index, index + length));
+    }
+  }
+
+  let best = 0;
+  samples.forEach((sample) => {
+    if (sample.includes(target) || target.includes(sample) && sample.length >= Math.max(2, target.length - 1)) {
+      best = Math.max(best, sample.length === target.length ? 0.96 : 0.75);
+    }
+    const distance = levenshteinDistance(target, sample);
+    best = Math.max(best, 1 - distance / Math.max(target.length, sample.length));
+  });
+  return best;
+}
+
+function findBrandCandidates(text) {
+  return registeredBrands()
+    .map((brand) => ({ brand, score: brandMatchScore(brand, text) }))
+    .filter((candidate) => candidate.score >= 0.24)
+    .sort((a, b) => b.score - a.score || a.brand.localeCompare(b.brand, "ja"))
+    .slice(0, 3);
+}
+
+async function preprocessLabelImage(file) {
+  if (!file?.type.startsWith("image/")) throw new Error("画像ファイルを選択してください。");
+  if (file.size > 10 * 1024 * 1024) throw new Error("画像は10MB以下にしてください。");
+
+  let source;
+  let release = () => {};
+  if ("createImageBitmap" in window) {
+    source = await createImageBitmap(file);
+    release = () => source.close();
+  } else {
+    source = await new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const image = new Image();
+      image.onload = () => {
+        URL.revokeObjectURL(url);
+        resolve(image);
+      };
+      image.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error("画像を表示できませんでした。"));
+      };
+      image.src = url;
+    });
+  }
+
+  try {
+    const sourceWidth = source.naturalWidth || source.width;
+    const sourceHeight = source.naturalHeight || source.height;
+    const scale = Math.min(1, 1600 / Math.max(sourceWidth, sourceHeight));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(sourceWidth * scale));
+    canvas.height = Math.max(1, Math.round(sourceHeight * scale));
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(source, 0, 0, canvas.width, canvas.height);
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
+    for (let index = 0; index < pixels.data.length; index += 4) {
+      const gray = 0.299 * pixels.data[index] + 0.587 * pixels.data[index + 1] + 0.114 * pixels.data[index + 2];
+      const contrasted = Math.max(0, Math.min(255, (gray - 128) * 1.3 + 136));
+      pixels.data[index] = contrasted;
+      pixels.data[index + 1] = contrasted;
+      pixels.data[index + 2] = contrasted;
+    }
+    context.putImageData(pixels, 0, 0);
+    return canvas;
+  } finally {
+    release();
+  }
+}
+
+function setOcrProgress(progress = 0) {
+  const percentage = Math.round(Math.min(1, Math.max(0, progress)) * 100);
+  els.ocrProgress.style.width = `${percentage}%`;
+}
+
+function setOcrBusy(isBusy) {
+  els.ocrImageFile.disabled = isBusy;
+  els.ocrNone.disabled = isBusy;
+  els.ocrManual.disabled = isBusy;
+  els.ocrRetake.disabled = isBusy;
+  const closeButton = els.ocrDialog.querySelector(".close-dialog");
+  if (closeButton) closeButton.disabled = isBusy;
+}
+
+function ocrLogger(message) {
+  const statusNames = {
+    "loading tesseract core": "文字認識を準備しています",
+    "initializing tesseract": "文字認識を準備しています",
+    "loading language traineddata": "日本語データを読み込んでいます",
+    "initializing api": "日本語の読み取りを準備しています",
+    "recognizing text": "ラベルの文字を読み取っています",
+  };
+  if (statusNames[message.status]) els.ocrStatus.textContent = `${statusNames[message.status]}…`;
+  if (Number.isFinite(message.progress)) setOcrProgress(message.progress);
+}
+
+async function recognizeLabelWith(language, canvas) {
+  if (!window.Tesseract?.createWorker) throw new Error("文字認識機能を読み込めませんでした。通信状態を確認して再読み込みしてください。");
+  const options = {
+    workerPath: new URL("vendor/tesseract/worker.min.js", document.baseURI).href,
+    corePath: new URL("vendor/tesseract/core", document.baseURI).href,
+    langPath: new URL("vendor/tesseract/lang", document.baseURI).href,
+    logger: ocrLogger,
+  };
+  const worker = await window.Tesseract.createWorker(language, 1, options);
+  try {
+    await worker.setParameters({ preserve_interword_spaces: "1" });
+    const result = await worker.recognize(canvas);
+    return result.data.text || "";
+  } finally {
+    await worker.terminate();
+  }
+}
+
+function clearOcrPreview() {
+  if (ocrPreviewUrl) URL.revokeObjectURL(ocrPreviewUrl);
+  ocrPreviewUrl = "";
+  els.ocrPreview.removeAttribute("src");
+  els.ocrPreview.hidden = true;
+}
+
+function resetOcrResult({ keepPreview = false } = {}) {
+  if (!keepPreview) clearOcrPreview();
+  els.ocrCandidates.replaceChildren();
+  els.ocrText.textContent = "";
+  els.ocrTextDetails.hidden = true;
+  els.ocrSaveLabelRow.hidden = true;
+  els.ocrSaveLabel.checked = false;
+  els.ocrProgressWrap.hidden = true;
+  setOcrProgress(0);
+}
+
+function openOcrDialog(target) {
+  ocrTarget = target;
+  ocrSourceFile = null;
+  els.ocrImageFile.value = "";
+  resetOcrResult();
+  els.ocrStatus.textContent = "写真を撮影してください。";
+  els.ocrStatus.classList.remove("is-error");
+  if (els.formDialog.open) els.formDialog.close();
+  if (els.quickVisitDialog.open) els.quickVisitDialog.close();
+  els.ocrDialog.showModal();
+}
+
+function selectBrandInCurrentForm(brand, forceManual = false) {
+  const existingOption = [...els.nameSelect.options].some((option) => option.value === brand);
+  if (!forceManual && existingOption) {
+    els.nameSelect.value = brand;
+  } else {
+    els.nameSelect.value = "__new__";
+    els.newName.value = forceManual ? "" : brand;
+  }
+  setInputMode(els.nameSelect, els.newName);
+  updatePreviousKeepInfo();
+}
+
+function returnFromOcr({ brand = "", manual = false } = {}) {
+  const target = ocrTarget;
+  if (els.ocrDialog.open) els.ocrDialog.close();
+  if (target?.type === "quick" && !brand && !manual) {
+    clearOcrPreview();
+    ocrSourceFile = null;
+    ocrTarget = null;
+    openQuickVisit(target.store);
+    return;
+  }
+  if (target?.type === "quick") {
+    prepareCurrentForm(target.store);
+  }
+  if (target?.type === "form" || target?.type === "quick") {
+    if (brand || manual) selectBrandInCurrentForm(brand, manual);
+    els.formDialog.showModal();
+  }
+  clearOcrPreview();
+  ocrSourceFile = null;
+  ocrTarget = null;
+}
+
+async function chooseOcrCandidate(brand) {
+  if (ocrRunning) return;
+  if (els.ocrSaveLabel.checked && ocrSourceFile) {
+    try {
+      els.ocrStatus.textContent = "ラベル画像を保存しています…";
+      labelImages[brand] = await resizeLabelImage(ocrSourceFile);
+      queueLabelSync(brand);
+      saveLabelImages();
+      render();
+    } catch (error) {
+      window.alert(error.message || "ラベル画像を保存できませんでした。");
+      return;
+    }
+  }
+  returnFromOcr({ brand });
+}
+
+function renderOcrCandidates(candidates) {
+  els.ocrCandidates.replaceChildren();
+  if (candidates.length === 0) {
+    const message = document.createElement("p");
+    message.className = "ocr-no-candidate";
+    message.textContent = "登録済み銘柄に近い候補を見つけられませんでした。撮り直すか、手入力してください。";
+    els.ocrCandidates.append(message);
+    els.ocrSaveLabelRow.hidden = true;
+    return;
+  }
+  const heading = document.createElement("strong");
+  heading.className = "ocr-candidate-title";
+  heading.textContent = "銘柄候補（選んで確定）";
+  els.ocrCandidates.append(heading);
+  candidates.forEach(({ brand }) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "ocr-candidate-button";
+    button.textContent = brand;
+    button.addEventListener("click", () => chooseOcrCandidate(brand));
+    els.ocrCandidates.append(button);
+  });
+  els.ocrSaveLabelRow.hidden = false;
+}
+
+async function readLabelImage(file) {
+  if (ocrRunning || !file) return;
+  ocrRunning = true;
+  setOcrBusy(true);
+  ocrSourceFile = file;
+  resetOcrResult();
+  clearOcrPreview();
+  ocrPreviewUrl = URL.createObjectURL(file);
+  els.ocrPreview.src = ocrPreviewUrl;
+  els.ocrPreview.hidden = false;
+  els.ocrProgressWrap.hidden = false;
+  els.ocrStatus.textContent = "写真を準備しています…";
+  els.ocrStatus.classList.remove("is-error");
+  try {
+    const canvas = await preprocessLabelImage(file);
+    let recognizedText = await recognizeLabelWith("jpn", canvas);
+    let candidates = findBrandCandidates(recognizedText);
+    if (normalizeOcrText(recognizedText).length < 3 || (candidates[0]?.score || 0) < 0.38) {
+      els.ocrStatus.textContent = "縦書きの文字も確認しています…";
+      setOcrProgress(0);
+      const verticalText = await recognizeLabelWith("jpn_vert", canvas);
+      recognizedText = `${recognizedText}\n${verticalText}`.trim();
+      candidates = findBrandCandidates(recognizedText);
+    }
+    els.ocrText.textContent = recognizedText.trim() || "文字を読み取れませんでした。";
+    els.ocrTextDetails.hidden = false;
+    renderOcrCandidates(candidates);
+    els.ocrStatus.textContent = candidates.length
+      ? "候補を確認して、銘柄を1つ選んでください。"
+      : "銘柄候補を見つけられませんでした。";
+    setOcrProgress(1);
+  } catch (error) {
+    els.ocrStatus.textContent = error.message || "ラベルを読み取れませんでした。もう一度お試しください。";
+    els.ocrStatus.classList.add("is-error");
+  } finally {
+    ocrRunning = false;
+    setOcrBusy(false);
+    els.ocrProgressWrap.hidden = true;
+    if (!els.ocrDialog.open) {
+      clearOcrPreview();
+      ocrSourceFile = null;
+      ocrTarget = null;
+    }
+  }
 }
 
 function setInputMode(select, newInput) {
@@ -2474,7 +2985,9 @@ els.backupRestoreFile.addEventListener("change", async () => {
   await restoreBackup(file);
   els.backupRestoreFile.value = "";
 });
+els.findNearbyStores.addEventListener("click", () => findNearbyStoresForHome());
 els.findNearbyStore.addEventListener("click", chooseNearbyStore);
+els.scanLabelFromForm.addEventListener("click", () => openOcrDialog({ type: "form" }));
 els.saveStoreLocation.addEventListener("click", registerHistoryStoreLocation);
 els.calendarPrev.addEventListener("click", () => moveCalendarMonth(-1));
 els.calendarNext.addEventListener("click", () => moveCalendarMonth(1));
@@ -2488,6 +3001,38 @@ els.storeVisitToday.addEventListener("click", () => {
   render();
   calendarMonth = monthStartFromDate(dateToInput());
   renderStoreVisitCalendar(store);
+});
+els.quickVisitToday.addEventListener("click", () => {
+  if (!currentQuickStore) return;
+  const added = recordStoreVisit(currentQuickStore, dateToInput());
+  els.quickVisitStatus.textContent = added
+    ? "本日を来店日に記録しました。"
+    : "本日の来店はすでに登録されています。";
+  render();
+  renderQuickVisit(currentQuickStore);
+});
+els.quickScanLabel.addEventListener("click", () => {
+  if (currentQuickStore) openOcrDialog({ type: "quick", store: currentQuickStore });
+});
+els.quickOpenHistory.addEventListener("click", () => {
+  const store = currentQuickStore;
+  if (!store) return;
+  els.quickVisitDialog.close();
+  openStoreHistory(store);
+});
+els.ocrImageFile.addEventListener("change", () => {
+  const [file] = els.ocrImageFile.files;
+  readLabelImage(file);
+});
+els.ocrNone.addEventListener("click", () => returnFromOcr());
+els.ocrManual.addEventListener("click", () => returnFromOcr({ manual: true }));
+els.ocrRetake.addEventListener("click", () => {
+  if (ocrRunning) return;
+  ocrSourceFile = null;
+  els.ocrImageFile.value = "";
+  resetOcrResult();
+  els.ocrStatus.textContent = "新しい写真を撮影してください。";
+  els.ocrImageFile.click();
 });
 
 els.storeSelect.addEventListener("change", () => {
@@ -2659,9 +3204,22 @@ els.delete.addEventListener("click", () => {
   els.detailDialog.close();
 });
 document.querySelectorAll(".close-dialog").forEach((button) => button.addEventListener("click", () => button.closest("dialog").close()));
+els.ocrDialog.addEventListener("close", () => {
+  if (!ocrRunning) {
+    clearOcrPreview();
+    ocrSourceFile = null;
+    ocrTarget = null;
+  }
+});
+els.ocrDialog.addEventListener("cancel", (event) => {
+  if (!ocrRunning) return;
+  event.preventDefault();
+  els.ocrStatus.textContent = "文字を読み取っています。完了までお待ちください。";
+});
 
 render();
 initializeSupabaseAuth();
+tryAutomaticNearbyStores();
 window.addEventListener("online", () => scheduleCloudSync(0));
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") scheduleCloudSync(0);

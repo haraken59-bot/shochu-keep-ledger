@@ -1,13 +1,23 @@
-const CACHE_NAME = "shochu-keep-ledger-v28-0";
+const CACHE_NAME = "shochu-keep-ledger-v31-0";
 const APP_FILES = [
   "./",
   "./index.html",
-  "./styles.css?v=27",
+  "./styles.css?v=31.0",
   "./supabase-config.js?v=22",
-  "./app.js?v=28.0",
+  "./app.js?v=31.0",
   "./manifest.webmanifest?v=22",
   "./icon.svg?v=22",
-  "./icon.svg"
+  "./icon.svg",
+  "./vendor/tesseract/tesseract.min.js?v=7.0.0",
+  "./vendor/tesseract/worker.min.js",
+  "./vendor/tesseract/core/tesseract-core-lstm.wasm.js",
+  "./vendor/tesseract/core/tesseract-core-lstm.wasm",
+  "./vendor/tesseract/core/tesseract-core-simd-lstm.wasm.js",
+  "./vendor/tesseract/core/tesseract-core-simd-lstm.wasm",
+  "./vendor/tesseract/core/tesseract-core-relaxedsimd-lstm.wasm.js",
+  "./vendor/tesseract/core/tesseract-core-relaxedsimd-lstm.wasm",
+  "./vendor/tesseract/lang/jpn.traineddata.gz",
+  "./vendor/tesseract/lang/jpn_vert.traineddata.gz"
 ];
 
 self.addEventListener("install", (event) => {
