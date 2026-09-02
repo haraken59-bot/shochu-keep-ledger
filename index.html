@@ -11,7 +11,7 @@
     <link rel="manifest" href="manifest.webmanifest?v=22" />
     <link rel="icon" href="icon.svg?v=22" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="icon.svg?v=22" />
-    <link rel="stylesheet" href="styles.css?v=25" />
+    <link rel="stylesheet" href="styles.css?v=27" />
   </head>
   <body>
     <main class="app-shell">
@@ -31,9 +31,10 @@
       </header>
 
       <section id="cloud-update-banner" class="cloud-update-banner" aria-labelledby="cloud-update-title" hidden>
-        <div>
+        <div class="cloud-update-copy">
           <strong id="cloud-update-title">クラウドに新しいデータがあります</strong>
           <p id="cloud-update-summary">内容を確認して、この端末へ読み込めます。</p>
+          <ul id="cloud-update-changes" class="cloud-update-changes"></ul>
         </div>
         <button id="cloud-update-button" type="button">最新データを読み込む</button>
       </section>
@@ -70,7 +71,7 @@
           <p>右下のボタンから、最初の一本を登録しましょう。</p>
         </div>
       </section>
-      <p class="app-version" aria-label="アプリのバージョン">Ver. 25</p>
+      <p class="app-version" aria-label="アプリのバージョン">Ver. 28</p>
     </main>
 
     <button id="add-button" class="fab" type="button" aria-label="追加メニューを開く">＋</button>
@@ -411,6 +412,6 @@
 
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="supabase-config.js?v=22"></script>
-    <script src="app.js?v=25.4"></script>
+    <script src="app.js?v=28.0"></script>
   </body>
 </html>
