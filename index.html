@@ -11,7 +11,7 @@
     <link rel="manifest" href="manifest.webmanifest?v=22" />
     <link rel="icon" href="icon.svg?v=22" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="icon.svg?v=22" />
-    <link rel="stylesheet" href="styles.css?v=31.0" />
+    <link rel="stylesheet" href="styles.css?v=32.0" />
   </head>
   <body>
     <main class="app-shell">
@@ -83,7 +83,7 @@
           <p>右下のボタンから、最初の一本を登録しましょう。</p>
         </div>
       </section>
-      <p class="app-version" aria-label="アプリのバージョン">Ver. 31</p>
+      <p class="app-version" aria-label="アプリのバージョン">Ver. 32</p>
     </main>
 
     <button id="add-button" class="fab" type="button" aria-label="追加メニューを開く">＋</button>
@@ -187,6 +187,19 @@
           <select id="store-select" name="storeSelect" required></select>
           <input id="store-new" class="store-new" name="storeNew" type="text" placeholder="新しい店名を入力" maxlength="40" hidden />
         </label>
+        <fieldset id="new-store-closed-days" class="closed-days-fieldset" hidden>
+          <legend>基本定休日（任意・複数選択可）</legend>
+          <div class="weekday-options">
+            <label><input type="checkbox" name="newStoreClosedDay" value="0" /><span>日</span></label>
+            <label><input type="checkbox" name="newStoreClosedDay" value="1" /><span>月</span></label>
+            <label><input type="checkbox" name="newStoreClosedDay" value="2" /><span>火</span></label>
+            <label><input type="checkbox" name="newStoreClosedDay" value="3" /><span>水</span></label>
+            <label><input type="checkbox" name="newStoreClosedDay" value="4" /><span>木</span></label>
+            <label><input type="checkbox" name="newStoreClosedDay" value="5" /><span>金</span></label>
+            <label><input type="checkbox" name="newStoreClosedDay" value="6" /><span>土</span></label>
+          </div>
+          <small>未設定でも保存できます。臨時休業や営業時間は判定しません。</small>
+        </fieldset>
         <button id="find-nearby-store" class="location-button" type="button">現在地から近い店を選ぶ</button>
         <p id="nearby-store-status" class="location-status" aria-live="polite">店舗の場所を一度登録すると使えます。</p>
         <label>
@@ -195,6 +208,16 @@
           <input id="name-new" class="brand-new" name="nameNew" type="text" placeholder="新しい銘柄を入力" maxlength="40" hidden />
         </label>
         <button id="scan-label-from-form" class="camera-button" type="button">ラベルを撮影して銘柄候補を出す</button>
+        <section id="pending-label-photo" class="pending-label-photo" hidden>
+          <button id="pending-label-preview-button" class="image-zoom-button" type="button" aria-label="撮影したラベル写真を拡大">
+            <img id="pending-label-preview" alt="保存予定のラベル写真" />
+          </button>
+          <div>
+            <p id="pending-label-message">この写真をラベル画像として保存します。</p>
+            <button id="remove-pending-label" class="text-button compact-button" type="button">写真を外す</button>
+          </div>
+        </section>
+        <p id="bottle-save-status" class="form-status" aria-live="polite"></p>
         <p id="previous-keep-info" class="previous-keep-info" aria-live="polite" hidden></p>
         <label>
           <span>残量（%）</span>
@@ -260,10 +283,6 @@
         </div>
         <p id="ocr-status" class="ocr-status" aria-live="polite">写真を撮影してください。</p>
         <div id="ocr-candidates" class="ocr-candidates"></div>
-        <label id="ocr-save-label-row" class="ocr-save-label-row" hidden>
-          <input id="ocr-save-label" type="checkbox" />
-          <span>選んだ銘柄のラベル画像としても保存する</span>
-        </label>
         <details id="ocr-text-details" class="ocr-text-details" hidden>
           <summary>読み取った文字を確認</summary>
           <pre id="ocr-text"></pre>
@@ -311,7 +330,7 @@
         <div class="sheet-heading">
           <div>
             <p class="eyebrow">BOTTLE LABEL</p>
-            <h2>ラベル画像を登録</h2>
+            <h2 id="label-manager-title">ラベル画像を登録</h2>
           </div>
           <button class="icon-button close-dialog" type="button" aria-label="閉じる">×</button>
         </div>
@@ -322,10 +341,55 @@
         </label>
         <label>
           <span>ラベル画像 <b>必須</b></span>
-          <input id="label-image-file" name="labelImage" type="file" accept="image/*" required />
+          <input id="label-image-file" name="labelImage" type="file" accept="image/*" capture="environment" required />
         </label>
-        <button class="primary-button" type="submit">ラベルを保存する</button>
+        <section id="label-manager-current" class="label-manager-current" hidden>
+          <span>現在のラベル画像</span>
+          <button id="label-manager-current-button" class="image-zoom-button" type="button" aria-label="現在のラベル画像を拡大">
+            <img id="label-manager-current-image" alt="現在のラベル画像" />
+          </button>
+        </section>
+        <img id="label-manager-preview" class="label-manager-preview" alt="選択した新しいラベル画像" hidden />
+        <p id="label-manager-status" class="form-status" aria-live="polite"></p>
+        <button id="label-manager-submit" class="primary-button" type="submit">ラベルを保存する</button>
       </form>
+    </dialog>
+
+    <dialog id="label-compare-dialog" class="sheet detail-sheet">
+      <section class="sheet-content" aria-labelledby="label-compare-title">
+        <div class="sheet-handle" aria-hidden="true"></div>
+        <div class="sheet-heading">
+          <div>
+            <p class="eyebrow">LABEL CHECK</p>
+            <h2 id="label-compare-title">ラベル画像を確認</h2>
+          </div>
+          <button class="icon-button close-dialog" type="button" aria-label="閉じる">×</button>
+        </div>
+        <p id="label-compare-description" class="past-form-description"></p>
+        <div class="label-comparison">
+          <section>
+            <strong>現在の画像</strong>
+            <button id="compare-current-preview" class="image-zoom-button compare-image-button" type="button" aria-label="現在の画像を拡大">
+              <img id="compare-current-image" alt="現在のラベル画像" />
+            </button>
+            <button id="use-current-label" class="secondary-button" type="button">現在の画像を使う</button>
+          </section>
+          <section>
+            <strong>今回の写真</strong>
+            <button id="compare-new-preview" class="image-zoom-button compare-image-button" type="button" aria-label="今回の写真を拡大">
+              <img id="compare-new-image" alt="今回撮影したラベル写真" />
+            </button>
+            <button id="use-new-label" class="primary-button" type="button">今回の写真を使う</button>
+          </section>
+        </div>
+      </section>
+    </dialog>
+
+    <dialog id="image-preview-dialog" class="image-preview-dialog">
+      <section>
+        <button class="icon-button close-dialog image-preview-close" type="button" aria-label="閉じる">×</button>
+        <img id="image-preview-large" alt="ラベル画像の拡大表示" />
+      </section>
     </dialog>
 
     <dialog id="data-manager-dialog" class="sheet">
@@ -338,7 +402,7 @@
           </div>
           <button class="icon-button close-dialog" type="button" aria-label="閉じる">×</button>
         </div>
-        <p class="past-form-description">ボトル、来店履歴、ラベル画像、登録した店舗位置を一つのファイルに保存します。</p>
+        <p class="past-form-description">ボトル、来店履歴、ラベル画像、店舗位置、基本定休日を一つのファイルに保存します。</p>
         <button id="backup-download" class="primary-button" type="button">バックアップファイルを保存</button>
         <label class="restore-file-button">
           <input id="backup-restore-file" class="sr-only" type="file" accept="application/json,.json" />
@@ -358,6 +422,12 @@
           </div>
           <button class="icon-button close-dialog" type="button" aria-label="閉じる">×</button>
         </div>
+        <section id="detail-label-section" class="detail-label-section">
+          <button id="detail-label-preview-button" class="image-zoom-button" type="button" aria-label="ラベル画像を拡大">
+            <img id="detail-label-image" alt="焼酎のラベル画像" />
+          </button>
+          <button id="detail-label-action" class="secondary-button" type="button">ラベル画像を登録</button>
+        </section>
         <section class="remaining-panel" aria-label="残量の調整">
           <div class="remaining-title"><span>残量</span><strong id="detail-remaining"></strong></div>
           <div class="progress-track"><span id="detail-progress"></span></div>
@@ -390,6 +460,24 @@
         </div>
         <button id="save-store-location" class="location-button" type="button">この店の現在地を登録</button>
         <p id="history-location-status" class="location-status" aria-live="polite"></p>
+
+        <form id="store-closed-days-form" class="store-closed-days-form">
+          <fieldset class="closed-days-fieldset">
+            <legend>基本定休日</legend>
+            <div class="weekday-options">
+              <label><input type="checkbox" name="storeClosedDay" value="0" /><span>日</span></label>
+              <label><input type="checkbox" name="storeClosedDay" value="1" /><span>月</span></label>
+              <label><input type="checkbox" name="storeClosedDay" value="2" /><span>火</span></label>
+              <label><input type="checkbox" name="storeClosedDay" value="3" /><span>水</span></label>
+              <label><input type="checkbox" name="storeClosedDay" value="4" /><span>木</span></label>
+              <label><input type="checkbox" name="storeClosedDay" value="5" /><span>金</span></label>
+              <label><input type="checkbox" name="storeClosedDay" value="6" /><span>土</span></label>
+            </div>
+            <small>通常休む曜日だけを設定します。未設定・複数選択も可能です。</small>
+          </fieldset>
+          <button class="secondary-button" type="submit">基本定休日を保存</button>
+          <p id="store-closed-days-status" class="form-status" aria-live="polite"></p>
+        </form>
 
         <h3 class="history-section-title">来店履歴</h3>
         <button id="store-visit-today" class="secondary-button visit-today-button" type="button">今日来店した</button>
@@ -484,6 +572,6 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="vendor/tesseract/tesseract.min.js?v=7.0.0"></script>
     <script src="supabase-config.js?v=22"></script>
-    <script src="app.js?v=31.0"></script>
+    <script src="app.js?v=32.0"></script>
   </body>
 </html>

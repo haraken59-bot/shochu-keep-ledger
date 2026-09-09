@@ -1,10 +1,10 @@
-const CACHE_NAME = "shochu-keep-ledger-v31-0";
+const CACHE_NAME = "shochu-keep-ledger-v32-0";
 const APP_FILES = [
   "./",
   "./index.html",
-  "./styles.css?v=31.0",
+  "./styles.css?v=32.0",
   "./supabase-config.js?v=22",
-  "./app.js?v=31.0",
+  "./app.js?v=32.0",
   "./manifest.webmanifest?v=22",
   "./icon.svg?v=22",
   "./icon.svg",
