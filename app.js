@@ -26,6 +26,11 @@ const els = {
   accountStatus: document.querySelector("#account-status"),
   authDialog: document.querySelector("#auth-dialog"),
   authForm: document.querySelector("#auth-form"),
+  passwordForm: document.querySelector("#password-form"),
+  newPassword: document.querySelector("#new-password"),
+  confirmPassword: document.querySelector("#confirm-password"),
+  passwordSubmit: document.querySelector("#password-submit"),
+  passwordMessage: document.querySelector("#password-message"),
   authEmail: document.querySelector("#auth-email"),
   authSubmit: document.querySelector("#auth-submit"),
   authSignedOut: document.querySelector("#auth-signed-out"),
@@ -250,6 +255,10 @@ function renderCloudUpdateBanner() {
 function renderAuthState(session = null) {
   const previousUserId = authSession?.user?.id || "";
   authSession = session;
+  if (previousUserId !== (session?.user?.id || "")) {
+    els.passwordForm.reset();
+    els.passwordMessage.textContent = "";
+  }
   const connected = Boolean(session?.user);
   const nextUserId = session?.user?.id || "";
   if (previousUserId !== nextUserId) {
@@ -289,12 +298,13 @@ async function initializeSupabaseAuth() {
         detectSessionInUrl: true,
       },
     });
-    const { data, error } = await supabaseClient.auth.getSession();
-    if (error) throw error;
-    renderAuthState(data.session);
-    if (isCloudSyncEnabled()) scheduleCloudSync(0);
     supabaseClient.auth.onAuthStateChange((event, session) => {
       renderAuthState(session);
+      if (event === "PASSWORD_RECOVERY" && session?.user) {
+        if (!els.authDialog.open) els.authDialog.showModal();
+        els.newPassword.focus();
+        els.passwordMessage.textContent = "新しいパスワードを入力して保存してください。";
+      }
       if (event === "SIGNED_IN") {
         if (isCloudSyncEnabled()) {
           setAuthMessage("ログインできました。端末内の変更をクラウドへ確認します。");
@@ -304,10 +314,42 @@ async function initializeSupabaseAuth() {
         }
       }
     });
+    const { data, error } = await supabaseClient.auth.getSession();
+    if (error) throw error;
+    renderAuthState(data.session);
+    if (isCloudSyncEnabled()) scheduleCloudSync(0);
   } catch (error) {
     renderAuthState();
     els.accountStatus.textContent = "端末内に保存中";
     setAuthMessage(error.message || "クラウド接続を確認できませんでした。", true);
+  }
+}
+
+async function saveAccountPassword(event) {
+  event.preventDefault();
+  if (els.passwordSubmit.disabled) return;
+  if (!supabaseClient || !authSession?.user) {
+    els.passwordMessage.textContent = "メールのリンクからログインしてから設定してください。";
+    return;
+  }
+  if (!els.passwordForm.reportValidity()) return;
+  if (els.newPassword.value !== els.confirmPassword.value) {
+    els.passwordMessage.textContent = "2つのパスワードが一致していません。";
+    return;
+  }
+  els.passwordSubmit.disabled = true;
+  els.passwordMessage.textContent = "パスワードを保存しています…";
+  try {
+    const { error } = await supabaseClient.auth.updateUser({ password: els.newPassword.value });
+    if (error) throw error;
+    els.passwordForm.reset();
+    els.passwordMessage.textContent = "パスワードを設定しました。同じメールアドレスとこのパスワードで食事写真インポーターにログインできます。";
+  } catch (error) {
+    els.passwordMessage.textContent = error?.code === "reauthentication_needed"
+      ? "再認証が必要です。新しいログイン用メールのリンクを開いてから、もう一度設定してください。"
+      : "パスワードを保存できませんでした。通信状況とパスワードの条件を確認し、もう一度お試しください。";
+  } finally {
+    els.passwordSubmit.disabled = false;
   }
 }
 
@@ -3423,6 +3465,11 @@ els.accountButton.addEventListener("click", () => {
   els.authDialog.showModal();
 });
 els.authForm.addEventListener("submit", sendMagicLink);
+els.passwordForm.addEventListener("submit", saveAccountPassword);
+els.authDialog.addEventListener("close", () => {
+  els.passwordForm.reset();
+  els.passwordMessage.textContent = "";
+});
 els.authSignOut.addEventListener("click", signOutFromSupabase);
 els.cloudMigrationButton.addEventListener("click", migrateLocalDataToSupabase);
 els.cloudRestoreButton.addEventListener("click", () => restoreFromSupabase());

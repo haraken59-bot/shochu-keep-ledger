@@ -118,6 +118,18 @@
               <small id="auth-user-email"></small>
             </div>
           </div>
+          <section class="cloud-restore-card" aria-labelledby="password-title">
+            <strong id="password-title">パスワードを設定・変更</strong>
+            <p>食事写真インポーターでも、上のメールアドレスとこのパスワードでログインできます。焼酎キープ帖のメールリンクでのログインも引き続き使えます。</p>
+            <form id="password-form">
+              <label><span>新しいパスワード（8文字以上）</span>
+                <input id="new-password" type="password" autocomplete="new-password" minlength="8" required /></label>
+              <label><span>新しいパスワード（確認）</span>
+                <input id="confirm-password" type="password" autocomplete="new-password" minlength="8" required /></label>
+              <button id="password-submit" class="primary-button" type="submit">パスワードを保存</button>
+              <p id="password-message" aria-live="polite"></p>
+            </form>
+          </section>
           <section class="cloud-sync-card" aria-labelledby="cloud-sync-title">
             <strong id="cloud-sync-title">自動クラウド保存</strong>
             <p id="cloud-sync-status" aria-live="polite"></p>
@@ -572,6 +584,6 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="vendor/tesseract/tesseract.min.js?v=7.0.0"></script>
     <script src="supabase-config.js?v=22"></script>
-    <script src="app.js?v=32.0"></script>
+    <script src="app.js?v=32.1"></script>
   </body>
 </html>
