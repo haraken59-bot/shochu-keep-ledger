@@ -3,12 +3,15 @@ const LABELS_KEY = "shochu-keep-ledger-label-images-v1";
 const STORE_LOCATIONS_KEY = "shochu-keep-ledger-store-locations-v1";
 const STORE_SETTINGS_KEY = "shochu-keep-ledger-store-settings-v1";
 const STORE_VISITS_KEY = "shochu-keep-ledger-store-visits-v1";
+const REMAINING_HISTORY_KEY = "shochu-keep-ledger-remaining-history-v1";
 const KEEP_VISITS_MIGRATION_KEY = "shochu-keep-ledger-keep-visits-migration-v1";
 const CLOUD_MIGRATION_KEY = "shochu-keep-ledger-cloud-migration-v1";
 const CLOUD_OWNER_KEY = "shochu-keep-ledger-cloud-owner-v1";
 const PENDING_REMAINING_KEY = "shochu-keep-ledger-pending-remaining-v1";
 const PENDING_VISIT_DELETES_KEY = "shochu-keep-ledger-pending-visit-deletes-v1";
 const PENDING_LABELS_KEY = "shochu-keep-ledger-pending-labels-v1";
+const REMAINING_HISTORY_DISPLAY_LIMIT = 10;
+const REMAINING_UNDO_NOTE = "直前の残量変更を取り消し";
 const DAY = 24 * 60 * 60 * 1000;
 const PUBLIC_APP_URL = "https://haraken59-bot.github.io/shochu-keep-ledger/";
 
@@ -119,6 +122,8 @@ const els = {
   range: document.querySelector("#remaining-range"),
   decrease: document.querySelector("#decrease-button"),
   increase: document.querySelector("#increase-button"),
+  remainingHistoryList: document.querySelector("#remaining-history-list"),
+  remainingHistoryStatus: document.querySelector("#remaining-history-status"),
   detailStarted: document.querySelector("#detail-started"),
   detailLastVisited: document.querySelector("#detail-last-visited"),
   detailDays: document.querySelector("#detail-days"),
@@ -177,6 +182,7 @@ let labelImages = loadLabelImages();
 let storeLocations = loadStoreLocations();
 let storeSettings = loadStoreSettings();
 let storeVisits = loadStoreVisits();
+let remainingHistory = loadRemainingHistory();
 let selectedId = null;
 let editingHistoryId = null;
 let editingVisitId = null;
@@ -214,11 +220,14 @@ let formTransition = false;
 let ocrReturning = false;
 let bottleCommitInProgress = false;
 let labelSaveInProgress = false;
+let remainingUndoInProgress = false;
 renumberKeeps();
 migrateKeepDatesToStoreVisits();
 saveStoreVisits();
 saveStoreLocations();
 saveStoreSettings({ sync: false });
+saveRemainingHistory();
+migrateLegacyPendingRemainingChanges();
 
 function setAuthMessage(message, isError = false) {
   els.authMessage.textContent = message;
@@ -269,6 +278,7 @@ function renderAuthState(session = null) {
     cloudUpdateMode = "";
     cloudUpdateMessages = [];
     pendingCloudSnapshot = null;
+    if (nextUserId) migrateLegacyPendingRemainingChanges();
   }
   els.accountDot.classList.toggle("is-connected", connected);
   els.accountStatus.textContent = connected ? "クラウド接続済み" : "クラウド未接続";
@@ -630,13 +640,19 @@ function setCloudRestoreStatus(message, isError = false) {
 }
 
 async function fetchCloudRestoreSnapshot() {
-  const [cloudStores, cloudBottles, cloudVisits, cloudLabels] = await Promise.all([
+  const [cloudStores, cloudBottles, cloudVisits, cloudLabels, cloudRemainingUpdates] = await Promise.all([
     supabaseData(supabaseClient.from("stores").select("id,name,latitude,longitude,location_updated_at,closed_weekdays")),
     supabaseData(supabaseClient.from("bottles").select("id,legacy_id,store_id,brand,volume_ml,current_remaining,kept_at,last_visited_at,status,notes,last_updated_at")),
     supabaseData(supabaseClient.from("store_visits").select("id,store_id,visited_on")),
     supabaseData(supabaseClient.from("brand_labels").select("id,brand,image_path")),
+    supabaseData(supabaseClient.from("remaining_updates")
+      .select("id,bottle_id,updated_at,previous_remaining,new_remaining,image_path,notes")
+      .order("updated_at", { ascending: false })
+      .order("id", { ascending: false })
+      .limit(1000)),
   ]);
   const storeById = new Map(cloudStores.map((store) => [store.id, store]));
+  const cloudBottleById = new Map(cloudBottles.map((bottle) => [bottle.id, bottle]));
   const restoredBottles = cloudBottles.flatMap((bottle) => {
     const store = storeById.get(bottle.store_id);
     if (!store || !bottle.legacy_id || !bottle.brand || !bottle.kept_at) return [];
@@ -674,12 +690,29 @@ async function fetchCloudRestoreSnapshot() {
     store.name,
     { closedWeekdays: normalizeClosedWeekdays(store.closed_weekdays) },
   ]));
+  const restoredRemainingHistory = cloudRemainingUpdates.flatMap((update) => {
+    const bottle = cloudBottleById.get(update.bottle_id);
+    if (!bottle?.legacy_id || !update.updated_at) return [];
+    return [{
+      id: String(update.id),
+      bottleId: String(bottle.legacy_id),
+      updatedAt: update.updated_at,
+      previousRemaining: Number(update.previous_remaining),
+      newRemaining: Number(update.new_remaining),
+      imagePath: update.image_path || "",
+      notes: update.notes || "",
+      kind: String(update.notes || "").startsWith(REMAINING_UNDO_NOTE) ? "undo" : "normal",
+      synced: true,
+      targetHistoryId: "",
+    }];
+  });
 
   return {
     bottles: restoredBottles,
     storeVisits: restoredVisits,
     storeLocations: restoredLocations,
     storeSettings: restoredSettings,
+    remainingHistory: restoredRemainingHistory,
     labelRows: cloudLabels,
     storeCount: cloudStores.length,
     revision: createCloudRevision(cloudStores, cloudBottles, cloudVisits, cloudLabels),
@@ -823,6 +856,9 @@ async function inspectCloudUpdates() {
     return { safeToSync: false, autoApply: localUnchanged, snapshot, messages };
   }
 
+  if (Object.keys(loadPendingRemainingChanges()).length === 0) {
+    replaceRemainingHistoryFromCloud(snapshot.remainingHistory);
+  }
   rememberCloudRevision(snapshot);
   setCloudUpdateAvailability(false);
   return { safeToSync: true, snapshot };
@@ -894,7 +930,7 @@ async function restoreFromSupabase(options = {}) {
     }
     const confirmed = !requireConfirmation || window.confirm(
       `クラウドのデータをこの端末へ読み込みますか？\n\n`
-      + `店舗 ${restored.storeCount}件・ボトル ${restored.bottles.length}件・来店日 ${restored.storeVisits.length}件・ラベル ${restored.labelRows.length}件\n\n`
+      + `店舗 ${restored.storeCount}件・ボトル ${restored.bottles.length}件・来店日 ${restored.storeVisits.length}件・残量履歴 ${restored.remainingHistory.length}件・ラベル ${restored.labelRows.length}件\n\n`
       + `現在の端末内データは、このクラウド内容に置き換わります。`,
     );
     if (!confirmed) {
@@ -903,8 +939,8 @@ async function restoreFromSupabase(options = {}) {
     }
 
     const restoredLabels = await downloadCloudLabelImages(restored.labelRows);
-    const previousState = { bottles, labelImages, storeLocations, storeSettings, storeVisits };
-    const storageKeys = [STORAGE_KEY, LABELS_KEY, STORE_LOCATIONS_KEY, STORE_SETTINGS_KEY, STORE_VISITS_KEY, KEEP_VISITS_MIGRATION_KEY];
+    const previousState = { bottles, labelImages, storeLocations, storeSettings, storeVisits, remainingHistory };
+    const storageKeys = [STORAGE_KEY, LABELS_KEY, STORE_LOCATIONS_KEY, STORE_SETTINGS_KEY, STORE_VISITS_KEY, REMAINING_HISTORY_KEY, KEEP_VISITS_MIGRATION_KEY];
     const previousStorage = new Map(storageKeys.map((key) => [key, localStorage.getItem(key)]));
     try {
       bottles = normalizeBottles(restored.bottles);
@@ -912,6 +948,7 @@ async function restoreFromSupabase(options = {}) {
       storeLocations = restored.storeLocations;
       storeSettings = restored.storeSettings;
       storeVisits = restored.storeVisits;
+      remainingHistory = normalizeRemainingHistory(restored.remainingHistory).map((entry) => ({ ...entry, synced: true }));
       renumberKeeps();
       localStorage.removeItem(KEEP_VISITS_MIGRATION_KEY);
       migrateKeepDatesToStoreVisits();
@@ -921,8 +958,9 @@ async function restoreFromSupabase(options = {}) {
       localStorage.setItem(STORE_LOCATIONS_KEY, JSON.stringify(storeLocations));
       localStorage.setItem(STORE_SETTINGS_KEY, JSON.stringify(storeSettings));
       localStorage.setItem(STORE_VISITS_KEY, JSON.stringify(storeVisits));
+      localStorage.setItem(REMAINING_HISTORY_KEY, JSON.stringify(remainingHistory));
     } catch (error) {
-      ({ bottles, labelImages, storeLocations, storeSettings, storeVisits } = previousState);
+      ({ bottles, labelImages, storeLocations, storeSettings, storeVisits, remainingHistory } = previousState);
       previousStorage.forEach((value, key) => {
         if (value === null) localStorage.removeItem(key);
         else localStorage.setItem(key, value);
@@ -957,7 +995,7 @@ async function restoreFromSupabase(options = {}) {
     renderCloudSyncState();
     const appliedMessages = changeMessages.length > 0 ? changeMessages : describeCloudChanges(restored);
     if (automatic || changeMessages.length > 0) showAppliedCloudChanges(appliedMessages);
-    setCloudRestoreStatus(`${automatic ? "自動反映" : "読み込み"}が完了しました。ボトル ${bottles.length}件・来店日 ${storeVisits.length}件です。`);
+    setCloudRestoreStatus(`${automatic ? "自動反映" : "読み込み"}が完了しました。ボトル ${bottles.length}件・来店日 ${storeVisits.length}件・残量履歴 ${remainingHistory.length}件です。`);
     shouldSyncAfterRestore = true;
   } catch (error) {
     setCloudRestoreStatus(error.message || "クラウドからデータを読み込めませんでした。", true);
@@ -1044,35 +1082,111 @@ function renderCloudSyncState() {
 }
 
 function loadPendingRemainingChanges() {
-  return readStoredObject(pendingCloudStorageKey(PENDING_REMAINING_KEY));
+  const stored = readStoredObject(pendingCloudStorageKey(PENDING_REMAINING_KEY));
+  return Object.fromEntries(Object.entries(stored).flatMap(([key, change]) => {
+    if (!change || typeof change !== "object") return [];
+    const bottleId = String(change.bottleId || key || "");
+    const previousRemaining = Number(change.previousRemaining);
+    const newRemaining = Number(change.newRemaining);
+    if (!bottleId || !Number.isFinite(previousRemaining) || !Number.isFinite(newRemaining)) return [];
+    const changedAt = typeof change.changedAt === "string" && !Number.isNaN(Date.parse(change.changedAt))
+      ? change.changedAt
+      : new Date().toISOString();
+    const id = String(change.id || (change.bottleId ? key : `${bottleId}:${changedAt}`));
+    const notes = typeof change.notes === "string" ? change.notes : "焼酎キープ帳から更新";
+    return [[id, {
+      id,
+      bottleId,
+      previousRemaining: clampRemaining(previousRemaining),
+      newRemaining: clampRemaining(newRemaining),
+      visitedOn: change.visitedOn === null ? null : (change.visitedOn || dateToInput()),
+      changedAt,
+      notes,
+      kind: change.kind === "undo" || notes.startsWith(REMAINING_UNDO_NOTE) ? "undo" : "normal",
+      targetHistoryId: typeof change.targetHistoryId === "string" ? change.targetHistoryId : "",
+    }]];
+  }));
 }
 
 function savePendingRemainingChanges(changes) {
   localStorage.setItem(pendingCloudStorageKey(PENDING_REMAINING_KEY), JSON.stringify(changes));
 }
 
-function queueRemainingChange(bottle, newRemaining) {
-  if (!bottle) return;
+function queueRemainingChange(bottle, newRemaining, options = {}) {
+  if (!bottle) return null;
+  const previousRemaining = clampRemaining(bottle.remaining);
+  const normalizedNewRemaining = clampRemaining(newRemaining);
+  if (normalizedNewRemaining === previousRemaining) return null;
   const changes = loadPendingRemainingChanges();
-  const legacyId = String(bottle.id);
-  const previousRemaining = changes[legacyId]?.previousRemaining ?? Number(bottle.remaining);
-  if (Number(newRemaining) === Number(previousRemaining)) {
-    delete changes[legacyId];
-  } else {
-    changes[legacyId] = {
-      previousRemaining,
-      newRemaining: Number(newRemaining),
-      visitedOn: dateToInput(),
-      changedAt: new Date().toISOString(),
-    };
-  }
+  const latestPendingTime = Object.values(changes).reduce((latest, change) => {
+    const time = Date.parse(change.changedAt);
+    return Number.isNaN(time) ? latest : Math.max(latest, time);
+  }, 0);
+  const changedAt = new Date(Math.max(Date.now(), latestPendingTime + 1)).toISOString();
+  const id = crypto.randomUUID();
+  const notes = options.notes || "焼酎キープ帳から更新";
+  const kind = options.kind === "undo" ? "undo" : "normal";
+  const historyEntry = {
+    id,
+    bottleId: String(bottle.id),
+    updatedAt: changedAt,
+    previousRemaining,
+    newRemaining: normalizedNewRemaining,
+    imagePath: "",
+    notes,
+    kind,
+    synced: false,
+    targetHistoryId: options.targetHistoryId || "",
+  };
+  remainingHistory.push(historyEntry);
+  saveRemainingHistory();
+  changes[id] = {
+    id,
+    bottleId: String(bottle.id),
+    previousRemaining,
+    newRemaining: normalizedNewRemaining,
+    visitedOn: options.visitedOn === null ? null : (options.visitedOn || dateToInput()),
+    changedAt,
+    notes,
+    kind,
+    targetHistoryId: options.targetHistoryId || "",
+  };
   savePendingRemainingChanges(changes);
+  return historyEntry;
 }
 
 function removePendingRemainingChange(bottleId) {
   const changes = loadPendingRemainingChanges();
-  delete changes[String(bottleId)];
+  Object.entries(changes).forEach(([id, change]) => {
+    if (change.bottleId === String(bottleId)) delete changes[id];
+  });
   savePendingRemainingChanges(changes);
+}
+
+function migrateLegacyPendingRemainingChanges() {
+  const key = pendingCloudStorageKey(PENDING_REMAINING_KEY);
+  const raw = readStoredObject(key);
+  const normalized = loadPendingRemainingChanges();
+  if (JSON.stringify(raw) !== JSON.stringify(normalized)) savePendingRemainingChanges(normalized);
+  let historyChanged = false;
+  Object.values(normalized).forEach((change) => {
+    if (remainingHistory.some((entry) => entry.id === change.id)) return;
+    if (!bottles.some((bottle) => String(bottle.id) === change.bottleId)) return;
+    remainingHistory.push({
+      id: change.id,
+      bottleId: change.bottleId,
+      updatedAt: change.changedAt,
+      previousRemaining: change.previousRemaining,
+      newRemaining: change.newRemaining,
+      imagePath: "",
+      notes: change.notes,
+      kind: change.kind,
+      synced: false,
+      targetHistoryId: change.targetHistoryId,
+    });
+    historyChanged = true;
+  });
+  if (historyChanged) saveRemainingHistory();
 }
 
 function loadPendingVisitDeletes() {
@@ -1195,7 +1309,7 @@ function cloudBottlePayload(bottle, storeId, remaining = bottle.remaining) {
     current_remaining: Math.min(100, Math.max(0, Number(remaining))),
     kept_at: bottle.startedAt,
     last_visited_at: bottle.lastVisitedAt || bottle.startedAt,
-    status: Number(bottle.remaining) > 0 ? "active" : "finished",
+    status: Number(remaining) > 0 ? "active" : "finished",
     notes: bottle.notes || "",
     legacy_id: String(bottle.id),
   };
@@ -1220,12 +1334,17 @@ async function syncCloudBottles(snapshot, storeIds, userId) {
     .filter((bottle) => bottle.legacy_id)
     .map((bottle) => [String(bottle.legacy_id), bottle]));
   const localByLegacyId = new Map(snapshot.bottles.map((bottle) => [String(bottle.id), bottle]));
+  const pendingEntries = Object.entries(pendingRemaining)
+    .sort((left, right) => (
+      left[1].changedAt.localeCompare(right[1].changedAt)
+      || left[0].localeCompare(right[0])
+    ));
   const missingBottles = snapshot.bottles.filter((bottle) => !cloudByLegacyId.has(String(bottle.id)));
 
   if (missingBottles.length > 0) {
     const createdBottles = await supabaseData(
       supabaseClient.from("bottles").insert(missingBottles.map((bottle) => {
-        const pending = pendingRemaining[String(bottle.id)];
+        const pending = pendingEntries.find(([, change]) => change.bottleId === String(bottle.id))?.[1];
         return {
           user_id: userId,
           ...cloudBottlePayload(
@@ -1243,31 +1362,51 @@ async function syncCloudBottles(snapshot, storeIds, userId) {
     });
   }
 
-  const pendingEntries = Object.entries(pendingRemaining);
-  for (const [legacyId, change] of pendingEntries) {
+  for (const [changeId, change] of pendingEntries) {
+    const legacyId = change.bottleId;
     const localBottle = localByLegacyId.get(legacyId);
     const cloudBottle = cloudByLegacyId.get(legacyId);
     if (!localBottle || !cloudBottle) {
       const currentChanges = loadPendingRemainingChanges();
-      if (!localBottle) delete currentChanges[legacyId];
+      if (!localBottle) delete currentChanges[changeId];
       savePendingRemainingChanges(currentChanges);
       continue;
     }
-    if (Number(cloudBottle.current_remaining) !== Number(change.newRemaining)) {
-      await supabaseData(
-        supabaseClient.rpc("update_bottle_remaining", {
-          p_bottle_id: cloudBottle.id,
-          p_new_remaining: Number(change.newRemaining),
-          p_notes: "焼酎キープ帳から更新",
-          p_image_path: null,
-          p_visited_on: change.visitedOn || dateToInput(),
-        }),
-      );
+    const cloudRemaining = Number(cloudBottle.current_remaining);
+    if (cloudRemaining === Number(change.newRemaining)) {
+      const latestHistory = await fetchLatestCloudRemainingUpdate(cloudBottle.id);
+      if (!cloudHistoryMatchesChange(latestHistory, change)) {
+        throw new Error("クラウドの残量履歴と端末の変更内容が一致しません。最新データを確認してください。");
+      }
+    } else {
+      if (cloudRemaining !== Number(change.previousRemaining)) {
+        throw new Error("クラウドの残量が変更済みのため、この端末の残量変更を安全に保存できません。");
+      }
+      if (change.kind === "undo") {
+        await supabaseData(
+          supabaseClient.rpc("undo_latest_bottle_remaining", {
+            p_bottle_id: cloudBottle.id,
+            p_expected_previous_remaining: Number(change.newRemaining),
+            p_expected_new_remaining: Number(change.previousRemaining),
+          }),
+        );
+      } else {
+        await supabaseData(
+          supabaseClient.rpc("update_bottle_remaining", {
+            p_bottle_id: cloudBottle.id,
+            p_new_remaining: Number(change.newRemaining),
+            p_notes: change.notes || "焼酎キープ帳から更新",
+            p_image_path: null,
+            p_visited_on: change.visitedOn || dateToInput(),
+          }),
+        );
+      }
       cloudBottle.current_remaining = Number(change.newRemaining);
+      cloudBottle.status = Number(change.newRemaining) > 0 ? "active" : "finished";
     }
     const currentChanges = loadPendingRemainingChanges();
-    if (currentChanges[legacyId]?.changedAt === change.changedAt) {
-      delete currentChanges[legacyId];
+    if (currentChanges[changeId]?.changedAt === change.changedAt) {
+      delete currentChanges[changeId];
       savePendingRemainingChanges(currentChanges);
     }
   }
@@ -1422,6 +1561,7 @@ async function runCloudSync() {
       setCloudSyncState("syncing", "端末内の変更をクラウドへ保存しています…");
       await syncCloudSnapshot();
       const syncedSnapshot = await fetchCloudRestoreSnapshot();
+      replaceRemainingHistoryFromCloud(syncedSnapshot.remainingHistory);
       if (syncedSnapshot.comparable !== createLocalComparable()) {
         const messages = describeCloudChanges(syncedSnapshot);
         const localUnchanged = Boolean(
@@ -1629,6 +1769,90 @@ function saveBottles() {
   scheduleCloudSync();
 }
 
+async function fetchLatestCloudRemainingUpdate(bottleId) {
+  const rows = await supabaseData(
+    supabaseClient.from("remaining_updates")
+      .select("id,bottle_id,updated_at,previous_remaining,new_remaining,image_path,notes")
+      .eq("bottle_id", bottleId)
+      .order("updated_at", { ascending: false })
+      .order("id", { ascending: false })
+      .limit(1),
+  );
+  return rows[0] || null;
+}
+
+function cloudHistoryMatchesChange(history, change) {
+  if (!history) return false;
+  const amountsMatch = Number(history.previous_remaining) === Number(change.previousRemaining)
+    && Number(history.new_remaining) === Number(change.newRemaining);
+  if (!amountsMatch) return false;
+  const isUndo = String(history.notes || "").startsWith(REMAINING_UNDO_NOTE);
+  return change.kind === "undo" ? isUndo : !isUndo;
+}
+
+function clampRemaining(value) {
+  return Math.min(100, Math.max(0, Number(value)));
+}
+
+function normalizeRemainingHistory(source) {
+  if (!Array.isArray(source)) return [];
+  return source.flatMap((entry) => {
+    const bottleId = typeof entry?.bottleId === "string" ? entry.bottleId : "";
+    const previousRemaining = Number(entry?.previousRemaining);
+    const newRemaining = Number(entry?.newRemaining);
+    const updatedAt = typeof entry?.updatedAt === "string" && !Number.isNaN(Date.parse(entry.updatedAt))
+      ? entry.updatedAt
+      : "";
+    if (!bottleId || !updatedAt || !Number.isFinite(previousRemaining) || !Number.isFinite(newRemaining)) return [];
+    const notes = typeof entry.notes === "string" ? entry.notes.slice(0, 500) : "";
+    return [{
+      id: typeof entry.id === "string" && entry.id ? entry.id : crypto.randomUUID(),
+      bottleId,
+      updatedAt,
+      previousRemaining: clampRemaining(previousRemaining),
+      newRemaining: clampRemaining(newRemaining),
+      imagePath: typeof entry.imagePath === "string" ? entry.imagePath : "",
+      notes,
+      kind: entry.kind === "undo" || notes.startsWith(REMAINING_UNDO_NOTE) ? "undo" : "normal",
+      synced: entry.synced === true,
+      targetHistoryId: typeof entry.targetHistoryId === "string" ? entry.targetHistoryId : "",
+    }];
+  });
+}
+
+function loadRemainingHistory() {
+  try {
+    return normalizeRemainingHistory(JSON.parse(localStorage.getItem(REMAINING_HISTORY_KEY)));
+  } catch {
+    return [];
+  }
+}
+
+function saveRemainingHistory() {
+  localStorage.setItem(REMAINING_HISTORY_KEY, JSON.stringify(remainingHistory));
+}
+
+function replaceRemainingHistoryFromCloud(entries) {
+  remainingHistory = normalizeRemainingHistory(entries).map((entry) => ({ ...entry, synced: true }));
+  saveRemainingHistory();
+  if (els.detailDialog?.open && selectedId) renderRemainingHistory(selectedId);
+}
+
+function remainingHistoryForBottle(bottleId) {
+  return remainingHistory
+    .filter((entry) => entry.bottleId === String(bottleId))
+    .sort((left, right) => (
+      right.updatedAt.localeCompare(left.updatedAt)
+      || right.id.localeCompare(left.id)
+    ));
+}
+
+function removeRemainingHistoryForBottle(bottleId) {
+  const normalizedId = String(bottleId);
+  remainingHistory = remainingHistory.filter((entry) => entry.bottleId !== normalizedId);
+  saveRemainingHistory();
+}
+
 function loadLabelImages() {
   try {
     const saved = JSON.parse(localStorage.getItem(LABELS_KEY));
@@ -1767,6 +1991,7 @@ function createBackupData() {
       storeLocations,
       storeSettings,
       storeVisits,
+      remainingHistory,
     },
   };
 }
@@ -1860,6 +2085,9 @@ function parseBackupData(backup) {
       return [[normalizedStore, { closedWeekdays: normalizeClosedWeekdays(days) }]];
     }))
     : {};
+  const restoredBottleIds = new Set(restoredBottles.map((bottle) => String(bottle.id)));
+  const restoredRemainingHistory = normalizeRemainingHistory(data.remainingHistory || [])
+    .filter((entry) => restoredBottleIds.has(entry.bottleId));
 
   return {
     bottles: restoredBottles,
@@ -1867,6 +2095,7 @@ function parseBackupData(backup) {
     storeLocations: restoredStoreLocations,
     storeSettings: restoredStoreSettings,
     storeVisits: restoredStoreVisits,
+    remainingHistory: restoredRemainingHistory,
   };
 }
 
@@ -1885,11 +2114,13 @@ async function restoreBackup(file) {
     }
 
     const previousVisits = storeVisits;
+    savePendingRemainingChanges({});
     bottles = restored.bottles;
     labelImages = restored.labelImages;
     storeLocations = restored.storeLocations;
     storeSettings = restored.storeSettings;
     storeVisits = restored.storeVisits;
+    remainingHistory = restored.remainingHistory;
     queueRemovedVisitDeletes(previousVisits, storeVisits);
     Object.keys(labelImages).forEach(queueLabelSync);
     selectedId = null;
@@ -1905,8 +2136,9 @@ async function restoreBackup(file) {
     saveStoreLocations();
     saveStoreSettings();
     saveStoreVisits();
+    saveRemainingHistory();
     render();
-    setBackupStatus(`復元しました。ボトル履歴 ${bottles.length}件、来店日 ${storeVisits.length}件です。`);
+    setBackupStatus(`復元しました。ボトル履歴 ${bottles.length}件、来店日 ${storeVisits.length}件、残量履歴 ${remainingHistory.length}件です。`);
   } catch (error) {
     setBackupStatus(error.message || "バックアップを復元できませんでした。", true);
   }
@@ -2550,12 +2782,188 @@ function deleteHistoryEntry(id, store) {
   const bottle = bottles.find((item) => item.id === id);
   if (!bottle || !window.confirm(`「${bottle.name}」の履歴を削除しますか？`)) return;
   removePendingRemainingChange(bottle.id);
+  removeRemainingHistoryForBottle(bottle.id);
   bottles = bottles.filter((item) => item.id !== id);
   renumberKeeps();
   saveBottles();
   render();
   els.historyDialog.close();
   if (bottles.some((item) => item.store === store)) openStoreHistory(store);
+}
+
+function formatRemainingHistoryDate(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "日時不明";
+  return new Intl.DateTimeFormat("ja-JP", {
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function setRemainingHistoryStatus(message, isError = false) {
+  els.remainingHistoryStatus.textContent = message;
+  els.remainingHistoryStatus.classList.toggle("is-error", isError);
+}
+
+function remainingUndoUnavailableReason(bottle, latestHistory) {
+  if (!bottle || !latestHistory) return "取り消せる残量変更がありません。";
+  if (cloudUpdateAvailable || cloudUpdateMode === "conflict") {
+    return "クラウドとの変更確認が必要なため、先に最新データを確認してください。";
+  }
+  if (latestHistory.kind === "undo" || latestHistory.notes.startsWith(REMAINING_UNDO_NOTE)) {
+    return "直前の操作は取り消し記録のため、続けて取り消すことはできません。";
+  }
+  if (latestHistory.newRemaining === 0 || latestHistory.previousRemaining === 0) {
+    return "飲み切り処理を伴う変更はこの画面から取り消せません。";
+  }
+  if (Number(bottle.remaining) !== Number(latestHistory.newRemaining)) {
+    return "現在の残量が変更済みのため取り消せません。";
+  }
+  if (isCloudSyncEnabled() && navigator.onLine === false) {
+    return "クラウドの最新履歴を確認できないため、オンラインになってから取り消してください。";
+  }
+  return "";
+}
+
+function renderRemainingHistory(bottleId) {
+  const bottle = bottles.find((item) => String(item.id) === String(bottleId));
+  const history = remainingHistoryForBottle(bottleId);
+  els.remainingHistoryList.replaceChildren();
+  setRemainingHistoryStatus("");
+
+  if (history.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "remaining-history-empty";
+    empty.textContent = "残量変更履歴はまだありません";
+    els.remainingHistoryList.append(empty);
+    return;
+  }
+
+  history.slice(0, REMAINING_HISTORY_DISPLAY_LIMIT).forEach((entry, index) => {
+    const item = document.createElement("article");
+    item.className = "remaining-history-item";
+    const time = document.createElement("time");
+    time.dateTime = entry.updatedAt;
+    time.textContent = formatRemainingHistoryDate(entry.updatedAt);
+    const amounts = document.createElement("strong");
+    amounts.textContent = `${entry.previousRemaining}% → ${entry.newRemaining}%`;
+    item.append(time, amounts);
+
+    if (entry.kind === "undo" || entry.notes.startsWith(REMAINING_UNDO_NOTE)) {
+      const note = document.createElement("small");
+      note.textContent = REMAINING_UNDO_NOTE;
+      item.append(note);
+    }
+
+    if (index === 0) {
+      const reason = remainingUndoUnavailableReason(bottle, entry);
+      if (reason) {
+        const unavailable = document.createElement("p");
+        unavailable.className = "remaining-undo-unavailable";
+        unavailable.textContent = reason;
+        item.append(unavailable);
+      } else {
+        const undo = document.createElement("button");
+        undo.type = "button";
+        undo.className = "secondary-button remaining-undo-button";
+        undo.textContent = "この変更を取り消す";
+        undo.disabled = remainingUndoInProgress;
+        undo.addEventListener("click", () => undoLatestRemainingChange(bottle.id, entry.id));
+        item.append(undo);
+      }
+    }
+
+    els.remainingHistoryList.append(item);
+  });
+
+  if (history.length > REMAINING_HISTORY_DISPLAY_LIMIT) {
+    const limited = document.createElement("p");
+    limited.className = "remaining-history-limited";
+    limited.textContent = `最新${REMAINING_HISTORY_DISPLAY_LIMIT}件を表示しています。`;
+    els.remainingHistoryList.append(limited);
+  }
+}
+
+async function undoLatestRemainingChange(bottleId, historyId) {
+  if (remainingUndoInProgress) return;
+  remainingUndoInProgress = true;
+  renderRemainingHistory(bottleId);
+  setRemainingHistoryStatus("最新の残量履歴を確認しています…");
+  try {
+    let bottle = bottles.find((item) => String(item.id) === String(bottleId));
+    let latest = remainingHistoryForBottle(bottleId)[0];
+    if (!bottle || !latest || latest.id !== historyId) {
+      throw new Error("最新の残量変更が更新されたため取り消せません。もう一度履歴を確認してください。");
+    }
+
+    let reason = remainingUndoUnavailableReason(bottle, latest);
+    if (reason) throw new Error(reason);
+
+    if (isCloudSyncEnabled()) {
+      const inspection = await inspectCloudUpdates();
+      if (!inspection.safeToSync || cloudUpdateAvailable) {
+        throw new Error("クラウドに新しい変更があるため取り消しを停止しました。最新データを確認してください。");
+      }
+      bottle = bottles.find((item) => String(item.id) === String(bottleId));
+      latest = remainingHistoryForBottle(bottleId)[0];
+      reason = remainingUndoUnavailableReason(bottle, latest);
+      if (!bottle || !latest || latest.id !== historyId || reason) {
+        throw new Error(reason || "最新の残量変更が更新されたため取り消せません。");
+      }
+      const isPending = Boolean(loadPendingRemainingChanges()[latest.id]);
+      if (!isPending) {
+        const cloudLatest = inspection.snapshot.remainingHistory
+          .filter((entry) => entry.bottleId === String(bottleId))[0];
+        if (!cloudLatest || cloudLatest.id !== latest.id
+          || cloudLatest.previousRemaining !== latest.previousRemaining
+          || cloudLatest.newRemaining !== latest.newRemaining) {
+          throw new Error("ローカルとクラウドの最新履歴が一致しないため取り消せません。");
+        }
+      }
+    }
+
+    if (!window.confirm(
+      `直前の残量変更（${latest.previousRemaining}% → ${latest.newRemaining}%）を取り消して、`
+      + `${latest.newRemaining}% → ${latest.previousRemaining}%に戻しますか？`,
+    )) {
+      setRemainingHistoryStatus("取り消しをキャンセルしました。");
+      return;
+    }
+
+    bottle = bottles.find((item) => String(item.id) === String(bottleId));
+    const currentLatest = remainingHistoryForBottle(bottleId)[0];
+    reason = remainingUndoUnavailableReason(bottle, currentLatest);
+    if (!bottle || !currentLatest || currentLatest.id !== latest.id || reason) {
+      throw new Error(reason || "確認中に残量履歴が更新されたため取り消せません。");
+    }
+
+    queueRemainingChange(bottle, currentLatest.previousRemaining, {
+      kind: "undo",
+      notes: REMAINING_UNDO_NOTE,
+      visitedOn: null,
+      targetHistoryId: currentLatest.id,
+    });
+    bottles = bottles.map((item) => item.id === bottle.id
+      ? { ...item, remaining: currentLatest.previousRemaining }
+      : item);
+    saveBottles();
+    render();
+    updateDetailRemaining(currentLatest.previousRemaining, false);
+    els.detailLastVisited.textContent = formatDate(latestStoreVisitDate(bottle.store));
+    els.detailDays.textContent = visitText(bottles.find((item) => item.id === bottle.id));
+    renderRemainingHistory(bottle.id);
+    setRemainingHistoryStatus(`${currentLatest.newRemaining}% → ${currentLatest.previousRemaining}%に戻しました。来店日は変更していません。`);
+  } catch (error) {
+    setRemainingHistoryStatus(error.message || "残量変更を取り消せませんでした。", true);
+  } finally {
+    const finalMessage = els.remainingHistoryStatus.textContent;
+    const finalIsError = els.remainingHistoryStatus.classList.contains("is-error");
+    remainingUndoInProgress = false;
+    if (selectedId === bottleId) renderRemainingHistory(bottleId);
+    setRemainingHistoryStatus(finalMessage, finalIsError);
+  }
 }
 
 function openDetail(id) {
@@ -2574,6 +2982,7 @@ function openDetail(id) {
   else els.detailLabelImage.removeAttribute("src");
   els.detailLabelAction.textContent = labelSource ? "ラベル画像を変更" : "ラベル画像を登録";
   updateDetailRemaining(bottle.remaining, false);
+  renderRemainingHistory(bottle.id);
   els.detailDialog.showModal();
 }
 
@@ -2600,6 +3009,7 @@ function updateDetailRemaining(value, persist = true) {
     const updatedBottle = bottles.find((bottle) => bottle.id === selectedId);
     els.detailLastVisited.textContent = formatDate(latestStoreVisitDate(selectedBottle.store));
     els.detailDays.textContent = visitText(updatedBottle);
+    renderRemainingHistory(selectedId);
   }
 }
 
@@ -3793,6 +4203,7 @@ els.delete.addEventListener("click", () => {
   const bottle = bottles.find((item) => item.id === selectedId);
   if (!bottle || !window.confirm(`「${bottle.name}」を削除しますか？`)) return;
   removePendingRemainingChange(bottle.id);
+  removeRemainingHistoryForBottle(bottle.id);
   bottles = bottles.filter((item) => item.id !== selectedId);
   renumberKeeps();
   saveBottles();

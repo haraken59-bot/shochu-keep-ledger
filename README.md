@@ -80,3 +80,9 @@ Ver.28では、認証済みの本人データだけを読み取る `get_shochu_k
 ## Ver.32のSupabase変更
 
 `supabase/migrations/20260909_ver32_store_closed_weekdays.sql` で、既存の `stores` テーブルへ `closed_weekdays smallint[]` を追加します。値は日曜0〜土曜6、空配列は未設定です。既存のRLSとVer.28参照RPCは変更しません。
+
+## Ver.33の残量変更履歴と取り消し
+
+ボトル詳細に残量変更履歴を新しい順で最大10件表示します。最新の通常変更だけは確認後に元の残量へ戻せますが、履歴は削除せず、逆向きの変更を新しい履歴として保存します。0%を含む飲み切り変更、現在残量との不一致、同期競合、クラウド利用中のオフライン状態では安全のため取り消せません。取り消しても来店日は削除・追加しません。
+
+端末内では `localStorage` へ先に保存し、ログイン済み端末では `remaining_updates` と `bottles` へ自動同期します。Supabase側の原子的な検証と更新には `supabase/migrations/20260921_ver33_remaining_history_undo.sql` の `undo_latest_bottle_remaining` RPCを使用します。既存のRLSを維持し、実行権限は認証済み利用者だけに付与します。
