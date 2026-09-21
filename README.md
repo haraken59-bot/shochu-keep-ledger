@@ -67,6 +67,10 @@ GitHub Pagesで公開したURLをスマホで開き、ホーム画面に追加�
 
 Ver.28では、認証済みの本人データだけを読み取る `get_shochu_keep_reference` RPCを追加します。標準では現在キープ中のボトルだけを返し、追加・変更・削除はできません。接続方法と返却項目は [`docs/HARAKEN_AI_REFERENCE.md`](docs/HARAKEN_AI_REFERENCE.md) を参照してください。
 
+## ハラケンナビ参照連携
+
+Ver.34では、Ver.28の参照窓口を残したまま、店舗のエリア・緯度経度・基本定休日、ボトルのキープ日、日本時間基準の最終来店経過日数をまとめて取得する `get_shochu_keep_navigation_reference` RPCを追加します。認証済みの本人データだけを参照でき、テーブルや既存RLS、Ver.33の取り消しRPCは変更しません。接続方法は [`docs/HARAKEN_NAVI_REFERENCE.md`](docs/HARAKEN_NAVI_REFERENCE.md) を参照してください。
+
 ## 次に追加しやすい機能
 
 - 期限通知
