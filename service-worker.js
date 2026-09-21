@@ -2,7 +2,7 @@ const CACHE_NAME = "shochu-keep-ledger-v32-1";
 const APP_FILES = [
   "./",
   "./index.html",
-  "./styles.css?v=32.0",
+  "./styles.css?v=32.1",
   "./supabase-config.js?v=22",
   "./app.js?v=32.1",
   "./manifest.webmanifest?v=22",

@@ -2030,17 +2030,22 @@ function renderNearbyStoreCandidates(position) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "nearby-store-candidate";
+    const nameGroup = document.createElement("span");
+    nameGroup.className = "nearby-store-name";
     const name = document.createElement("strong");
     name.textContent = store;
+    nameGroup.append(name);
+    if (isStoreBasicClosedToday(store)) {
+      const closedBadge = document.createElement("span");
+      closedBadge.className = "basic-closed-today";
+      closedBadge.textContent = "休";
+      closedBadge.title = "本日は基本定休日";
+      closedBadge.setAttribute("aria-label", "本日は基本定休日");
+      nameGroup.append(closedBadge);
+    }
     const distanceText = document.createElement("span");
     distanceText.textContent = `現在地から約${formatDistance(distance)}`;
-    button.append(name, distanceText);
-    if (isStoreBasicClosedToday(store)) {
-      const closedText = document.createElement("span");
-      closedText.className = "basic-closed-today";
-      closedText.textContent = "本日は基本定休日";
-      button.append(closedText);
-    }
+    button.append(nameGroup, distanceText);
     button.addEventListener("click", () => openQuickVisit(store));
     els.nearbyStoresList.append(button);
   });
