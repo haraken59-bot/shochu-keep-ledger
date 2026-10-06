@@ -1,4 +1,4 @@
-const CACHE_NAME = "shochu-keep-ledger-v34-0";
+const CACHE_NAME = "shochu-keep-ledger-v34-1-otp";
 const APP_FILES = [
   "./",
   "./index.html",

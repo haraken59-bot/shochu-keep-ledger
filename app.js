@@ -363,27 +363,38 @@ async function saveAccountPassword(event) {
   }
 }
 
-async function sendMagicLink(event) {
-  event.preventDefault();
-  if (!els.authForm.reportValidity() || !supabaseClient) return;
-  els.authSubmit.disabled = true;
-  setAuthMessage("ログイン用メールを送信しています…");
-  try {
-    const { error } = await supabaseClient.auth.signInWithOtp({
-      email: els.authEmail.value.trim(),
-      options: {
-        emailRedirectTo: authRedirectUrl(),
-        shouldCreateUser: true,
-      },
-    });
-    if (error) throw error;
-    setAuthMessage("メールを送信しました。届いたメールのリンクを押してください。");
-  } catch (error) {
-    setAuthMessage(error.message || "メールを送信できませんでした。", true);
-  } finally {
-    els.authSubmit.disabled = false;
-  }
+
+// Email OTP state: no credential logging or persistence; no automatic retry.
+const emailOtpState={email:'',busy:false,until:0};
+function emailOtpError(error){
+ if(error?.status===429||error?.code==='over_email_send_rate_limit')return '短時間に送信回数が多いため、少し待ってから再度お試しください。';
+ if(error?.code==='otp_expired')return '認証コードが無効か、有効期限が切れています。時間をおいて再送してください。';
+ return '認証を完了できませんでした。コードと通信状態を確認してください。';
 }
+function renderEmailOtp(){
+ const wait=Math.max(0,Math.ceil((emailOtpState.until-Date.now())/1000));
+ els.authSubmit.disabled=!supabaseClient||emailOtpState.busy||wait>0;
+ els.authEmail.disabled=emailOtpState.busy||Boolean(emailOtpState.email);
+ els.authSubmit.textContent=wait?`再送まで${wait}秒`:emailOtpState.email?'コードを再送':'認証コードを送信';
+ document.querySelector('#otp-verify').disabled=emailOtpState.busy||!emailOtpState.email;
+ document.querySelector('#otp-change').disabled=emailOtpState.busy;
+}
+async function sendMagicLink(event){
+ event.preventDefault();if(!els.authForm.reportValidity()||!supabaseClient||emailOtpState.busy||Date.now()<emailOtpState.until)return;
+ emailOtpState.busy=true;renderEmailOtp();
+ try{const email=els.authEmail.value.trim();const {error}=await supabaseClient.auth.signInWithOtp({email,options:{shouldCreateUser:false}});if(error)throw error;
+ emailOtpState.email=email;emailOtpState.until=Date.now()+60000;setAuthMessage('認証コードをメールに送りました。');
+ }catch(error){if(error?.status===429)emailOtpState.until=Date.now()+60000;setAuthMessage(emailOtpError(error),true);}finally{emailOtpState.busy=false;renderEmailOtp();}
+}
+async function verifyEmailOtp(){
+ if(!supabaseClient||emailOtpState.busy||!emailOtpState.email)return;
+ const input=document.querySelector('#otp-code'),token=input.value.trim();input.value='';
+ if(!/^\d{6,10}$/.test(token)){setAuthMessage('認証コードが正しくありません。',true);return;}
+ emailOtpState.busy=true;renderEmailOtp();
+ try{const {error}=await supabaseClient.auth.verifyOtp({email:emailOtpState.email,token,type:'email'});if(error)throw error;setAuthMessage('ログインしました。');}
+ catch(error){if(error?.status===429)emailOtpState.until=Date.now()+60000;setAuthMessage(emailOtpError(error),true);}finally{emailOtpState.busy=false;renderEmailOtp();}
+}
+setInterval(renderEmailOtp,1000);
 
 async function signOutFromSupabase() {
   if (!supabaseClient || !authSession) return;
@@ -3880,6 +3891,8 @@ els.accountButton.addEventListener("click", () => {
   els.authDialog.showModal();
 });
 els.authForm.addEventListener("submit", sendMagicLink);
+document.querySelector('#otp-verify').addEventListener('click',verifyEmailOtp);
+document.querySelector('#otp-change').addEventListener('click',()=>{if(emailOtpState.busy)return;emailOtpState.email='';document.querySelector('#otp-code').value='';renderEmailOtp();els.authEmail.focus();});
 els.passwordForm.addEventListener("submit", saveAccountPassword);
 els.authDialog.addEventListener("close", () => {
   els.passwordForm.reset();
