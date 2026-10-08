@@ -2,16 +2,17 @@
 
 Git履歴、現行コード、保存SQL、既存テスト資料から確認できた範囲。現在状態は `SHOCHU_STATUS.md` を参照する。過去の試験成功は現在のDBや実機の再検証を意味しない。
 
-## 未公開：Ver.34監査修正（2026-10-09）
+## Ver.34監査修正版（2026-10-09公開、`b75bd9d`）
 
 - 来店日同期のsourceをDBのCHECK制約で許可されたimportへ修正。通常残量RPCのremaining_updatedは変更なし。
 - READMEと旧メールリンク案内を現行OTP仕様へ修正。
 - 表示Ver.34維持、app.jsアセット番号34.0-audit1、SWキャッシュv34-2-audit-20261009へ更新。
 - 来店日同期回帰試験追加、既存アイコン/PWA/残量/取り消し/バックアップ試験成功。
-- 実環境Auth/RLS/RPC/Storage監査結果・未確認事項を状態ファイルと監査報告へ記録。DB設定変更・公開なし。
+- 実環境Auth/RLS/RPC/Storage監査結果・未確認事項を状態ファイルと監査報告へ記録。DB設定変更なし。
 - 最終検証：修正版の認証済み同期・画像Storage往復・残量変更/取り消しを確認。GPS/OCR/定休日/オフラインOCRの隔離回帰もPASS。テストデータ後片付け済み。詳細はdocs/VER34_FINAL_VERIFICATION_20261009.md。
+- Pages run 37836190833のbuild/deploy成功。公開HTML/JS/SW HTTP 200・ローカル一致、公開ブラウザVer.34/新アセット・JS例外0を確認。スマホ実機通信断復帰は未確認。
 
-## 未公開：状態管理文書（2026-10-07）
+## 状態管理文書（2026-10-07作成、10/9にSTATUS・CHANGELOG公開）
 
 - SHOCHU_STATUS.md、CHANGELOG.md、プロジェクト用AGENTS.mdを作成。
 - アプリ機能・DB・版番号・公開版の変更なし。

@@ -6,6 +6,8 @@
 
 ## バージョン
 
+公開アプリコミット：b75bd9d90ac52b5a4709acf50c2044717f07212f。Pages run 37836190833のbuild/deploy/report-build-status成功を確認。公開HTML/JS/SWはいずれもHTTP 200・ローカルと一致。公開ブラウザのVer.34/新アセット読み込み・JSエラー0件を確認。後続の文書記録コミットはアプリ内容を変えない。
+
 表示はVer.34維持。監査の1項目修正で新機能はなく、既存のOTP/アイコン修正もVer.34を維持しているため。app.jsは34.0-audit1、SWはshochu-keep-ledger-v34-2-audit-20261009。manifest URLは既存のまま。
 
 ## 認証済み実ブラウザ
