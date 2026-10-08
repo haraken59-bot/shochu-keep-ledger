@@ -339,7 +339,7 @@ async function saveAccountPassword(event) {
   event.preventDefault();
   if (els.passwordSubmit.disabled) return;
   if (!supabaseClient || !authSession?.user) {
-    els.passwordMessage.textContent = "メールのリンクからログインしてから設定してください。";
+    els.passwordMessage.textContent = "メールの認証コードでログインしてから設定してください。";
     return;
   }
   if (!els.passwordForm.reportValidity()) return;
@@ -356,7 +356,7 @@ async function saveAccountPassword(event) {
     els.passwordMessage.textContent = "パスワードを設定しました。同じメールアドレスとこのパスワードで食事写真インポーターにログインできます。";
   } catch (error) {
     els.passwordMessage.textContent = error?.code === "reauthentication_needed"
-      ? "再認証が必要です。新しいログイン用メールのリンクを開いてから、もう一度設定してください。"
+      ? "再認証が必要です。新しいメール認証コードでログインしてから、もう一度設定してください。"
       : "パスワードを保存できませんでした。通信状況とパスワードの条件を確認し、もう一度お試しください。";
   } finally {
     els.passwordSubmit.disabled = false;
@@ -1491,7 +1491,8 @@ async function syncCloudVisits(snapshot, storeIds, userId) {
         user_id: userId,
         store_id: storeIds.get(visit.store),
         visited_on: visit.visitedAt,
-        source: "shochu_keep_ledger",
+        // Local visit snapshots do not retain an event source; use the DB's import category.
+        source: "import",
       }))),
     );
   }

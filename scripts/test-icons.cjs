@@ -60,7 +60,7 @@ const server = http.createServer((req, res) => {
     });
     await page.waitForFunction(async () => {
       const keys = await caches.keys();
-      return keys.includes('shochu-keep-ledger-v34-1-icons-20261006') && !keys.includes('shochu-keep-ledger-v34-1-otp');
+      return keys.includes('shochu-keep-ledger-v34-2-audit-20261009') && !keys.includes('shochu-keep-ledger-v34-1-otp');
     });
     await page.reload();
     await page.waitForFunction(async () => {
@@ -95,14 +95,36 @@ const server = http.createServer((req, res) => {
       return {bottles:restored.bottles.length, visits:restored.storeVisits.length, history:restored.remainingHistory.length};
     });
     assert.equal(roundTrip.bottles, 4); assert.ok(roundTrip.visits > 0); assert.equal(roundTrip.history, 2);
+    const related = await page.evaluate(() => ({
+      sameLocation: distanceInMeters({latitude:35,longitude:135},{latitude:35,longitude:135}),
+      oneDegree: distanceInMeters({latitude:0,longitude:0},{latitude:1,longitude:0}),
+      ocrCandidate: findBrandCandidates('黒霧鳥')[0]?.brand,
+      candidateCount: findBrandCandidates('黒霧鳥 二階堂 いいちこ').length,
+      weekdays: normalizeClosedWeekdays([5,5,-1,9,0]),
+    }));
+    assert.equal(related.sameLocation, 0);
+    assert.ok(related.oneDegree > 111000 && related.oneDegree < 112000);
+    assert.equal(related.ocrCandidate, '黒霧島');
+    assert.ok(related.candidateCount <= 3);
+    assert.deepEqual(related.weekdays, [0,5]);
     await context.setOffline(true);
     await page.reload();
     assert.equal(await page.locator('.app-version').innerText(), 'Ver. 34');
     const offlineIcons = await page.evaluate(async assets => Promise.all(assets.map(async asset => (await fetch(asset)).status)), assets);
     assert.ok(offlineIcons.every(status => status === 200));
+    const ocrText = await page.evaluate(async () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = 500; canvas.height = 120;
+      const pen = canvas.getContext('2d');
+      pen.fillStyle = 'white'; pen.fillRect(0,0,500,120);
+      pen.fillStyle = 'black'; pen.font = '64px sans-serif'; pen.fillText('12345',20,80);
+      return recognizeLabelWith('jpn', canvas);
+    });
+    assert.ok(ocrText.includes('12345'), `OCR returned: ${ocrText}`);
     assert.deepEqual(errors, []); assert.deepEqual(missing, []);
     console.log(JSON.stringify({result:'PASS', iconReferences:assets.length, dimensions,
       cacheUpgrade:true, localStoragePreserved:true, remainingAndUndo:true, backupRoundTrip:roundTrip,
-      offlinePwaAndIcons:true, pageErrors:errors, missingFiles:missing}, null, 2));
+      offlinePwaAndIcons:true, gpsOcrWeekdayLogic:related, offlineOcr:true,
+      pageErrors:errors, missingFiles:missing}, null, 2));
   } finally { await browser.close(); server.close(); }
 })().catch(error => { console.error(error); server.close(); process.exitCode = 1; });
