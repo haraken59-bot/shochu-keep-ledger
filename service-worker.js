@@ -1,4 +1,4 @@
-const CACHE_NAME = "shochu-keep-ledger-v34-2-audit-20261009";
+const CACHE_NAME = "shochu-keep-ledger-v34-3-icon-padding";
 const APP_FILES = [
   "./",
   "./index.html",
