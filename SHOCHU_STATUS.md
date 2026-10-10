@@ -1,25 +1,25 @@
 # 焼酎キープ帖：現在状態の正本
 
-最終確認日：2026-10-10（日本時間）。このファイルは現在状態、過去履歴は `CHANGELOG.md` を参照する。
+最終確認日：2026-10-11（日本時間）。このファイルは現在状態、過去履歴は `CHANGELOG.md` を参照する。
 
-## Ver.35：店舗来店日とボトルの分離（公開処理中）
+## Ver.35公開済み：店舗来店日とボトルの分離
 
-- Ver.35公開承認済み。表示Ver.35、app.js?v=35.0、SW shochu-keep-ledger-v35-visit-separationへ更新。公開反映は確認待ち。ナビ本体の開発コード・公開用出力に旧日付直接参照なし（公開実体の照合は未実施）。
+- Ver.35公開反映確認済み。公開コミット6c3bd1732dcd2dcafa0a4ebad50aaf6f9029f3ba、Pages run 38051405077 success。未ログイン隔離Edge（390px）でVer.35、ホーム・ログイン・ボトル登録・データ管理表示、JS例外0を確認。Supabase通信は遮断設定かつ発生0件。ナビ本体の公開実体照合は未実施。
 - 公開前PWA回帰試験成功：旧キャッシュ更新、localStorage保持、残量/取消、バックアップ往復、オフラインPWA/アイコン/OCR、GPS/定休日。JS例外0・参照切れ0。隔離合成データのみ使用し、実端末同期・実データ更新なし。
 - 承認に基づき実DBのget_shochu_keep_navigation_reference / get_shochu_keep_referenceを変更済み。店舗来店日はstore_visitsの最新値のみ、履歴なしはNULL。ボトルlast_visited_at・kept_atへのフォールバックを撤去し、経過日数・並び順もボトル日付に不依存。invoker・既存EXECUTE権限は維持。再現SQLはdocs/ver35-store-visit-rpc.sql。
 - 残量RPC update_bottle_remainingは本人の対象ボトルIDのみ更新し、同店舗のstore_visitsを追加。開始日・銘柄は更新しない。修正版アプリと上記2RPCは対象ボトル日付を店舗来店の根拠にしないため、旧日付書込み自体は今回の公開阻害要因としない。書込み廃止は互換性確認を含む残課題。get_hidaka_ai_contextにも当該ボトル日付の参照なし（先行確認）。
 - 再汚染リスク：未修正版端末/PWAキャッシュは全ボトル日付コピーと再送を継続できる。修正版公開だけでは旧端末の書込みをサーバーで阻止できない。全端末の修正版反映確認までは同期を再開しない。既存競合は自動採用せず、双方向とも手動反映を保留する。
-- 今回は2RPCの定義変更のみ実DBへ適用。bottlesとstore_visitsの変更前後の全行ハッシュは一致。実データ復旧・同期・公開は未実施。
+- 先行作業で2RPCの定義変更のみ実DBへ適用。bottlesとstore_visitsの変更前後の全行ハッシュは一致。今回の公開ではDB操作・実データ復旧・同期なし。
 - 実DB上でSELECTのみの合成データ試験2件が成功（docs/ver35-store-visit-rpc-tests.sql）。履歴ありの最新日・履歴なしNULL・同店舗複数ボトルを検証。JS構文検査、test-visit-separation.cjs、test-visit-sync.cjs成功。実ユーザーのナビ画面操作試験とは区別する。
 - ナビ本体再確認（10/10）：C:/Users/User/.codex/.chatgpt-projects/g-p-6a9873f4e65081918c0678d3f83d6e3a 配下を特定。outputs/navi-release-20261010 と outputs/navi-static に bottles.last_visited_at / lastVisitedAt の直接参照なし。api.jsは修正済みget_shochu_keep_navigation_referenceを呼び、hidaka-context.jsはRPCのlast_visited_on / days_since_last_visitをNULL維持で取得する。公開実体との今回の照合・実機確認は未実施。
 - ナビ側の残課題：hidaka-context.jsの説明文に旧フォールバック由来（ボトル日付・開始日）の説明が残る。実際の日付補完処理ではない。他プロジェクトのため今回は変更せず。work/otp-app-patch内に旧焼酎アプリコピーがあり、再配布・再適用しないこと。
-- 公開前再検査：node --check app.js、test-visit-separation.cjs、test-visit-sync.cjsが成功。公開予定Ver.35、実公開・同期・復旧は引き続き保留。旧端末が残る間は公開後も同期を再開しない（運用方針でありサーバーによる強制遮断ではない）。
+- 公開前再検査：node --check app.js、test-visit-separation.cjs、test-visit-sync.cjsが成功。旧端末が残る間は公開後も同期を再開しない（運用方針でありサーバーによる強制遮断ではない）。
 
 - app.jsのみローカル修正。全ボトルへの来店日コピーを無効化。店舗表示はstoreVisitsのみ、ボトル側旧日付は比較・送信・来店履歴生成に不使用。
 - 通常同期・初回クラウド移行のlast_visited_at送信を削除。読込・復元の互換フックは読取のみ。開始日の既存来店移行は維持し、旧lastVisitedAtは移行しない。
 - 既存DBのlast_visited_atはnullable（読み取り確認）。テーブル変更不要。既存残量RPCは対象ボトルの日付も更新する既存仕様のままだが、修正版アプリ・修正済み外部RPCはその値を店舗来店の根拠にしない。
-- 通信なしの合成データで来店登録・複数/飲み切りボトル不変・ID指定残量・復元・移行・クラウド読取をテスト。実データへの同期・復旧・公開は未実施。古い端末の再送による再汚染に注意。実機確認と公開は別承認待ち。
-- 下記の公開版情報は10/9版。ローカルapp.jsは公開版と不一致。公開用キャッシュ番号はまだ変更していない。
+- 通信なしの合成データで来店登録・複数/飲み切りボトル不変・ID指定残量・復元・移行・クラウド読取をテスト。実データへの同期・復旧は未実施。全端末の更新確認は利用者確認待ち。
+- Ver.35表示、app.js?v=35.0、SW shochu-keep-ledger-v35-visit-separationを公開済み。
 対象：このディレクトリのコード、GitHub main、GitHub Pages。アプリの実際の画面タイトルは「焼酎キープ帳」。
 
 **最終検証：** 来店日同期のCHECK制約違反を修正。10/9に修正版の認証済み来店日保存、残量変更/取り消し、Storage画像往復・表示、再読込後の認証維持を確認し公開可能と判断。スマホ実機通信断復帰は未確認。監査は `docs/VER34_AUDIT_20261009.md`、最新検証は `docs/VER34_FINAL_VERIFICATION_20261009.md`。SQLロール模擬試験と実ブラウザ試験を区別する。
@@ -28,14 +28,14 @@
 
 | 項目 | 確認結果 |
 |---|---|
-| 表示 | `Ver. 34`（index.html、公開画面） |
-| 内部更新の識別 | 公開/ローカルapp.jsは `v=34.0-audit1`、styles.cssは `v=34.0`。表示Ver.34維持 |
-| PWAキャッシュ | 公開/ローカル `shochu-keep-ledger-v34-3-icon-padding` |
+| 表示 | `Ver. 35`（index.html、公開画面） |
+| 内部更新の識別 | app.jsは `v=35.0`、未変更styles.cssは `v=34.0` |
+| PWAキャッシュ | `shochu-keep-ledger-v35-visit-separation` |
 | manifest参照 | `manifest.webmanifest?v=22`。これを現在のアプリ版番号と解釈しない |
 | 公開URL | https://haraken59-bot.github.io/shochu-keep-ledger/ |
-| アプリ修正の公開コミット | `b75bd9d90ac52b5a4709acf50c2044717f07212f`（直前版 `5aa1939`） |
+| アプリ修正の公開コミット | `6c3bd1732dcd2dcafa0a4ebad50aaf6f9029f3ba` |
 | ローカルHEAD / リモートmain | 上記修正＋公開結果の文書記録。文書コミット自身のSHAは自己参照させず `git rev-parse HEAD` / `git ls-remote origin refs/heads/main` で確認 |
-| Pages検証 | 修正コミットのrun `37836190833`：build/deploy/report-build-statusすべてsuccess。公開HTML/JS/SWはHTTP 200、ローカル一致 |
+| Pages検証 | run `38051405077` success、10/11公開画面Ver.35・主要4画面・JS例外0確認 |
 
 監査修正は公開済み。DBスキーマ・Policy・RPC・Auth・Storage設定変更なし。監査用テスト行・画像の作成/削除あり（後片付け済み）。ZIP・展開ソース・`.codex-remote-attachments/` は公開コミットに含めていない。AGENTS.mdは今回変更していない。
 
