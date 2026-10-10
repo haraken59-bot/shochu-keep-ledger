@@ -15,6 +15,195 @@ const REMAINING_UNDO_NOTE = "直前の残量変更を取り消し";
 const DAY = 24 * 60 * 60 * 1000;
 const PUBLIC_APP_URL = "https://haraken59-bot.github.io/shochu-keep-ledger/";
 
+// Temporary release only. Remove only after the one-shot audit and explicit approval.
+// Initialise before loading local data, registering events, or creating the Auth client.
+const SINGLE_SYNC_TEST_RELEASE = true;
+const singleSyncTest = createSingleSyncTest(localStorage, navigator.locks,
+  SINGLE_SYNC_TEST_RELEASE || new URLSearchParams(window.location.search).get("syncTest") === "once");
+const singleSyncPermit = Symbol("single-sync-test");
+let singleSyncPermissionAvailable = false;
+let singleSyncExpectedState = null;
+
+function createSingleSyncTest(storage, locks, requested) {
+  const key = "shochu-keep-ledger-single-sync-test-v1";
+  let latched = requested;
+  let unavailable = false;
+  const read = () => {
+    try {
+      const raw = storage.getItem(key);
+      if (raw) latched = true;
+      return raw ? JSON.parse(raw) : (latched ? { phase: "blocked" } : null);
+    } catch { unavailable = true; return { phase: "blocked" }; }
+  };
+  const save = (record) => {
+    if (unavailable) throw new Error("検証記録を保存できないため停止しました。");
+    const value = JSON.stringify(record);
+    storage.setItem(key, value);
+    if (storage.getItem(key) !== value) throw new Error("検証記録の保存確認に失敗しました。");
+  };
+  // Only initialise absent state. Reopening the test URL must never reset a used permit.
+  try {
+    if (requested && storage.getItem(key) === null) save({ phase: "ready", createdAt: new Date().toISOString() });
+  } catch { unavailable = true; }
+  read();
+  return {
+    active: () => { read(); return latched || unavailable; },
+    read,
+    run: async (task) => {
+      if (unavailable || !locks?.request) throw new Error("1回制限の保存または画面間の排他制御が利用できないため停止しました。");
+      return locks.request(key, { ifAvailable: true }, async (lock) => {
+        if (!lock || read()?.phase !== "ready") return;
+        const record = { ...read(), phase: "running", startedAt: new Date().toISOString() };
+        save(record); // Consume BEFORE the first network call; failures/crashes do not replenish it.
+        try {
+          await task(record, () => save(record));
+          record.phase = "completed";
+        } catch (error) {
+          record.phase = "stopped";
+          record.error = error.message;
+        } finally {
+          record.finishedAt = new Date().toISOString();
+          save(record);
+        }
+        return record;
+      });
+    },
+  };
+}
+
+async function readSingleSyncDatabase(userId) {
+  const snapshot = {};
+  for (const table of ["stores", "bottles", "store_visits", "remaining_updates", "brand_labels"]) {
+    snapshot[table] = [];
+    for (let offset = 0; ; offset += 500) {
+      const rows = await supabaseData(supabaseClient.from(table).select("*")
+        .eq("user_id", userId).order("id").range(offset, offset + 499));
+      snapshot[table].push(...rows);
+      if (rows.length < 500) break;
+    }
+  }
+  return snapshot;
+}
+
+function singleSyncDatabaseDiff(before, after) {
+  return Object.fromEntries(Object.keys(before).map((table) => {
+    const previous = new Map(before[table].map((row) => [row.id, row]));
+    const current = new Map(after[table].map((row) => [row.id, row]));
+    const changes = [...new Set([...previous.keys(), ...current.keys()])].flatMap((id) => {
+      const left = previous.get(id), right = current.get(id);
+      const fields = [...new Set([...Object.keys(left || {}), ...Object.keys(right || {})])]
+        .filter((field) => JSON.stringify(left?.[field]) !== JSON.stringify(right?.[field]));
+      return fields.length ? [{ id, kind: !left ? "added" : !right ? "deleted" : "updated",
+        store_id: right?.store_id || left?.store_id || (table === "stores" ? id : null),
+        fields, before: left || null, after: right || null }] : [];
+    });
+    return [table, { count: changes.length, changes }];
+  }));
+}
+
+function singleSyncPreflight(before) {
+  const local = JSON.parse(createLocalComparable());
+  const cloud = JSON.parse(createCloudComparable(before.stores, before.bottles, before.store_visits, before.brand_labels));
+  const changedSections = ["stores", "bottles", "labels"].filter((section) => JSON.stringify(local[section]) !== JSON.stringify(cloud[section]));
+  const oldVisits = new Set(cloud.visits.map((row) => JSON.stringify(row)));
+  const newVisits = new Set(local.visits.map((row) => JSON.stringify(row)));
+  const addedVisits = [...newVisits].filter((row) => !oldVisits.has(row)).map(JSON.parse);
+  const missingVisits = [...oldVisits].filter((row) => !newVisits.has(row)).map(JSON.parse);
+  const pending = Object.keys(loadPendingRemainingChanges()).length
+    + Object.keys(loadPendingVisitDeletes()).length + Object.keys(loadPendingLabels()).length;
+  const sectionDifferences = changedSections.map((section) => ({ section,
+    before: cloud[section], proposed: local[section] }));
+  // The UI comparison normalises missing/zero volume to 900. Do not let that hide a DB write.
+  const rawBottleDifferences = local.bottles.flatMap(([id, store, brand, volume, remaining, kept, status, notes]) => {
+    const row = before.bottles.find((bottle) => String(bottle.legacy_id) === id);
+    const expected = { store_id: before.stores.find((entry) => entry.name === store)?.id,
+      brand, volume_ml: volume, current_remaining: remaining, kept_at: kept, status, notes };
+    const fields = Object.keys(expected).filter((field) => {
+      const value = row?.[field];
+      return ["volume_ml", "current_remaining"].includes(field) ? Number(value) !== expected[field]
+        : (field === "notes" ? value || "" : value) !== expected[field];
+    });
+    return fields.length ? [{ id: row?.id || null, legacy_id: id, store, fields }] : [];
+  });
+  return { changedSections, sectionDifferences, rawBottleDifferences, addedVisits, missingVisits, pending,
+    safe: changedSections.length === 0 && rawBottleDifferences.length === 0 && pending === 0
+      && addedVisits.length <= 1 && missingVisits.length === 0 };
+}
+
+async function executeSingleSyncTest() {
+  return singleSyncTest.run(async (record, save) => {
+    if (!authSession?.user || !isCloudSyncEnabled() || navigator.onLine === false || cloudSyncPromise) {
+      throw new Error("ログイン・同期設定・オンライン状態を確認してください。再試行は停止中です。");
+    }
+    record.userId = authSession.user.id;
+    record.before = await readSingleSyncDatabase(record.userId);
+    record.preflight = singleSyncPreflight(record.before);
+    save();
+    if (!record.preflight.safe) throw new Error("同期前の差分が安全条件を超えたため、書き込まず停止しました。検証記録を確認してください。");
+    const unchanged = createLocalComparable();
+    singleSyncExpectedState = { userId: record.userId, comparable: unchanged };
+    if (!window.confirm(`同期はこの1回だけです。来店日追加予定：${record.preflight.addedVisits.length}件。ボトル変更：0件。実行しますか？`)) {
+      throw new Error("実行を取り消しました。自動同期は停止したままです。");
+    }
+    singleSyncPermissionAvailable = true;
+    record.result = await runCloudSync(singleSyncPermit);
+    // Reads only, including after a failed/partially completed cycle. Never retry writes.
+    record.after = await readSingleSyncDatabase(record.userId);
+    record.diff = singleSyncDatabaseDiff(record.before, record.after);
+    save();
+    if (record.result !== "synced") throw new Error("同期が完了しなかったため停止しました。競合を自動採用・復旧していません。");
+    if (unchanged !== createLocalComparable()) throw new Error("試験中に端末データが変化したため停止しました。");
+    const unexpected = Object.entries(record.diff).some(([table, diff]) => table !== "store_visits" ? diff.count > 0
+      : diff.changes.some((change) => change.kind !== "added" || !record.preflight.addedVisits.some(([name, date]) =>
+        record.before.stores.some((store) => store.id === change.store_id && store.name === name) && change.after.visited_on === date))
+        || diff.count !== record.preflight.addedVisits.length);
+    if (unexpected) throw new Error("想定外のDB差分を検出しました。追加同期・自動復旧はしません。");
+  });
+}
+
+function mountSingleSyncTest() {
+  if (!singleSyncTest.active()) return;
+  const panel = document.createElement("section");
+  panel.className = "cloud-sync-card";
+  panel.id = "single-sync-test-panel";
+  const title = document.createElement("strong");
+  title.textContent = "Ver.35 sync-test｜一時検証版・自動同期停止中";
+  const message = document.createElement("p");
+  message.setAttribute("aria-live", "polite");
+  const start = document.createElement("button");
+  start.textContent = "検証：同期を1回だけ実行";
+  const download = document.createElement("button");
+  download.textContent = "検証記録を保存";
+  const refresh = () => {
+    const record = singleSyncTest.read();
+    start.disabled = record?.phase !== "ready";
+    message.textContent = `同期検証専用：自動同期・クラウド読込・初回移行を停止中（${record?.phase || "blocked"}）。${record?.error || ""} この画面以外で操作しないでください。URLを戻しても停止は維持されます。`;
+  };
+  start.addEventListener("click", async () => {
+    start.disabled = true;
+    try { await executeSingleSyncTest(); refresh(); }
+    catch (error) { message.textContent = `検証停止：${error.message} 自動同期は停止したままです。`; }
+  });
+  download.addEventListener("click", () => {
+    const url = URL.createObjectURL(new Blob([JSON.stringify(singleSyncTest.read(), null, 2)], { type: "application/json" }));
+    const link = document.createElement("a");
+    link.href = url; link.download = "shochu-single-sync-test.json"; link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
+  panel.append(title, message, start, download);
+  els.cloudUpdateBanner.before(panel);
+  // No edits/logout while a test cycle is awaiting network responses, in any updated tab.
+  for (const type of ["click", "input", "change", "submit", "keydown"]) {
+    document.addEventListener(type, (event) => {
+      if (singleSyncTest.read()?.phase === "running" && !panel.contains(event.target)) {
+        event.preventDefault(); event.stopImmediatePropagation();
+      }
+    }, true);
+  }
+  window.addEventListener("storage", refresh);
+  refresh();
+}
+
 const demoBottles = [
   { id: "demo-1", store: "やきとり日高", name: "黒霧島", volume: 900, remaining: 70, startedAt: "2026-07-05", lastVisitedAt: "2026-07-24", notes: "水代 220円" },
   { id: "demo-2", store: "しょうふく", name: "二階堂", volume: 900, remaining: 90, startedAt: "2026-07-12", lastVisitedAt: "2026-07-28", notes: "" },
@@ -894,6 +1083,7 @@ function hasPendingCloudChanges() {
 }
 
 async function restoreFromSupabase(options = {}) {
+  if (singleSyncTest.active()) return;
   const {
     snapshot: providedSnapshot = null,
     requireConfirmation = true,
@@ -1236,6 +1426,7 @@ function queueLabelSync(brand) {
 }
 
 function scheduleCloudSync(delay = 700) {
+  if (singleSyncTest.active()) return;
   if (cloudSyncPaused || cloudUpdateAvailable || !isCloudSyncEnabled()) return;
   if (navigator.onLine === false) {
     setCloudSyncState("pending", "通信できるようになったら自動で再試行します。端末内のデータは保存済みです。");
@@ -1534,7 +1725,11 @@ async function syncCloudSnapshot() {
   await syncPendingCloudLabels(userId);
 }
 
-async function runCloudSync() {
+async function runCloudSync(permit) {
+  if (singleSyncTest.active()) {
+    if (permit !== singleSyncPermit || !singleSyncPermissionAvailable || singleSyncTest.read()?.phase !== "running") return null;
+    singleSyncPermissionAvailable = false;
+  }
   if (cloudSyncPromise) {
     cloudSyncQueued = true;
     return cloudSyncPromise;
@@ -1551,7 +1746,7 @@ async function runCloudSync() {
     try {
       const inspection = await inspectCloudUpdates();
       if (!inspection.safeToSync) {
-        if (inspection.autoApply) {
+        if (inspection.autoApply && !singleSyncTest.active()) {
           await restoreFromSupabase({
             snapshot: inspection.snapshot,
             requireConfirmation: false,
@@ -1562,6 +1757,9 @@ async function runCloudSync() {
         }
         return;
       }
+      if (singleSyncTest.active() && (authSession?.user?.id !== singleSyncExpectedState?.userId
+        || createLocalComparable() !== singleSyncExpectedState?.comparable
+        || hasPendingCloudChanges())) throw new Error("検証開始後に端末の状態が変わったため停止しました。");
       setCloudSyncState("syncing", "端末内の変更をクラウドへ保存しています…");
       await syncCloudSnapshot();
       const syncedSnapshot = await fetchCloudRestoreSnapshot();
@@ -1580,6 +1778,7 @@ async function runCloudSync() {
       setCloudUpdateAvailability(false);
       const time = new Intl.DateTimeFormat("ja-JP", { hour: "2-digit", minute: "2-digit" }).format(new Date());
       setCloudSyncState("idle", `${time}にクラウド保存を確認しました。`);
+      return "synced";
     } catch (error) {
       console.error("Cloud sync failed", error);
       setCloudSyncState("pending", "クラウドへ保存できませんでした。端末内には保存済みで、通信回復後に再試行します。");
@@ -1596,6 +1795,7 @@ async function runCloudSync() {
 }
 
 async function migrateLocalDataToSupabase() {
+  if (singleSyncTest.active()) return;
   if (!supabaseClient || !authSession?.user) {
     setCloudMigrationStatus("先にクラウドへログインしてください。", true);
     return;
@@ -4257,6 +4457,7 @@ els.ocrDialog.addEventListener("cancel", (event) => {
 });
 
 render();
+mountSingleSyncTest();
 initializeSupabaseAuth();
 tryAutomaticNearbyStores();
 window.addEventListener("online", () => scheduleCloudSync(0));
@@ -4267,7 +4468,7 @@ document.addEventListener("visibilitychange", () => {
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", async () => {
     try {
-      const registration = await navigator.serviceWorker.register("service-worker.js");
+      const registration = await navigator.serviceWorker.register("service-worker.js", { updateViaCache: "none" });
       await registration.update();
     } catch {
       // オフライン時は既存のキャッシュをそのまま利用する。
