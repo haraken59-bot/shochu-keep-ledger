@@ -9,28 +9,30 @@
   "theme_color": "#7d3025",
   "icons": [
     {
-      "src": "icons/icon-192-20261006.png",
+      "src": "icons/icon-192-v20261011.png",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "icons/icon-512-20261006.png",
+      "src": "icons/icon-512-v20261011.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "icons/maskable-192-20261006.png",
+      "src": "icons/icon-maskable-192-v20261011.png",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "maskable"
     },
     {
-      "src": "icons/maskable-512-20261006.png",
+      "src": "icons/icon-maskable-512-v20261011.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "maskable"
     }
-  ]
+  ],
+  "id": "/shochu-keep-ledger/",
+  "scope": "./"
 }

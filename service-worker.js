@@ -1,5 +1,5 @@
-const CACHE_NAME = "shochu-keep-ledger-v35-visit-separation";
-const APP_FILES = [
+const CACHE_NAME = "shochu-keep-ledger-icons-20261011";
+const APP_FILES = ["./icons/icon-192-v20261011.png","./icons/icon-512-v20261011.png","./icons/icon-maskable-192-v20261011.png","./icons/icon-maskable-512-v20261011.png",
   "./",
   "./index.html",
   "./styles.css?v=34.0",
