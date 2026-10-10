@@ -109,7 +109,7 @@ const server = http.createServer((req, res) => {
     assert.deepEqual(related.weekdays, [0,5]);
     await context.setOffline(true);
     await page.reload();
-    assert.equal(await page.locator('.app-version').innerText(), 'Ver. 34');
+    assert.equal(await page.locator('.app-version').innerText(), 'Ver. 35');
     const offlineIcons = await page.evaluate(async assets => Promise.all(assets.map(async asset => (await fetch(asset)).status)), assets);
     assert.ok(offlineIcons.every(status => status === 200));
     const ocrText = await page.evaluate(async () => {

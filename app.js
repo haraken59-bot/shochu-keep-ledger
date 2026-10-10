@@ -496,7 +496,6 @@ function createCloudRevision(cloudStores, cloudBottles, cloudVisits, cloudLabels
       Number(bottle.volume_ml) || 900,
       Number(bottle.current_remaining),
       bottle.kept_at,
-      bottle.last_visited_at || bottle.kept_at,
       bottle.status,
       bottle.notes || "",
       bottle.last_updated_at || "",
@@ -524,7 +523,6 @@ function createCloudComparable(cloudStores, cloudBottles, cloudVisits, cloudLabe
         Number(bottle.volume_ml) || 900,
         Number(bottle.current_remaining),
         bottle.kept_at,
-        bottle.last_visited_at || bottle.kept_at,
         bottle.status,
         bottle.notes || "",
       ]];
@@ -555,7 +553,6 @@ function createLocalComparable() {
       Number(bottle.volume) || 900,
       Number(bottle.remaining),
       bottle.startedAt,
-      bottle.lastVisitedAt || bottle.startedAt,
       Number(bottle.remaining) > 0 ? "active" : "finished",
       bottle.notes || "",
     ])),
@@ -748,9 +745,6 @@ function describeCloudChanges(snapshot) {
     }
     if (Number(localBottle.remaining) !== Number(cloudBottle.remaining)) {
       messages.push(`${bottleChangeLabel(cloudBottle)}：残量 ${localBottle.remaining}% → ${cloudBottle.remaining}%`);
-    }
-    if ((localBottle.lastVisitedAt || localBottle.startedAt) !== cloudBottle.lastVisitedAt) {
-      messages.push(`${bottleChangeLabel(cloudBottle)}：最終来店日を ${cloudBottle.lastVisitedAt} に更新`);
     }
     const metadataChanged = localBottle.store !== cloudBottle.store
       || localBottle.name !== cloudBottle.name
@@ -1319,7 +1313,6 @@ function cloudBottlePayload(bottle, storeId, remaining = bottle.remaining) {
     volume_ml: Number(bottle.volume) || 900,
     current_remaining: Math.min(100, Math.max(0, Number(remaining))),
     kept_at: bottle.startedAt,
-    last_visited_at: bottle.lastVisitedAt || bottle.startedAt,
     status: Number(remaining) > 0 ? "active" : "finished",
     notes: bottle.notes || "",
     legacy_id: String(bottle.id),
@@ -1331,7 +1324,6 @@ function cloudBottleMetadataChanged(cloudBottle, expected) {
     || cloudBottle.brand !== expected.brand
     || Number(cloudBottle.volume_ml) !== Number(expected.volume_ml)
     || cloudBottle.kept_at !== expected.kept_at
-    || cloudBottle.last_visited_at !== expected.last_visited_at
     || cloudBottle.status !== expected.status
     || (cloudBottle.notes || "") !== expected.notes;
 }
@@ -1686,7 +1678,6 @@ async function migrateLocalDataToSupabase() {
           volume_ml: Number(bottle.volume) || 900,
           current_remaining: Math.min(100, Math.max(0, Number(bottle.remaining))),
           kept_at: bottle.startedAt,
-          last_visited_at: bottle.lastVisitedAt || bottle.startedAt,
           last_updated_at: new Date().toISOString(),
           status: Number(bottle.remaining) > 0 ? "active" : "finished",
           notes: bottle.notes || "",
@@ -1956,7 +1947,7 @@ function loadStoreVisits() {
 
   const seen = new Set();
   return bottles.flatMap((bottle) => {
-    const visitedAt = bottle.lastVisitedAt || bottle.startedAt;
+    const visitedAt = bottle.startedAt;
     const key = `${bottle.store}\u0000${visitedAt}`;
     if (!bottle.store || !visitedAt || seen.has(key)) return [];
     seen.add(key);
@@ -1976,7 +1967,7 @@ function migrateKeepDatesToStoreVisits() {
   );
 
   bottles.forEach((bottle) => {
-    [bottle.startedAt, bottle.lastVisitedAt].forEach((visitedAt) => {
+    [bottle.startedAt].forEach((visitedAt) => {
       const key = `${bottle.store}\u0000${visitedAt}`;
       if (!bottle.store || !visitedAt || registered.has(key)) return;
       storeVisits.push({ id: crypto.randomUUID(), store: bottle.store, visitedAt });
@@ -2160,21 +2151,15 @@ function latestStoreVisitDate(store) {
   const recordedDates = storeVisits
     .filter((visit) => visit.store === store)
     .map((visit) => visit.visitedAt);
-  const fallbackDates = bottles
-    .filter((bottle) => bottle.store === store)
-    .map((bottle) => bottle.startedAt);
-  return [...recordedDates, ...fallbackDates].reduce(
+  return recordedDates.reduce(
     (latest, date) => (!latest || date > latest ? date : latest),
     "",
   );
 }
 
 function syncStoreLastVisited(store) {
-  const latestVisit = latestStoreVisitDate(store);
-  if (!latestVisit) return;
-  bottles = bottles.map((bottle) => (
-    bottle.store === store ? { ...bottle, lastVisitedAt: latestVisit } : bottle
-  ));
+  // Compatibility hook for restore/visit callers. Never mutate bottle history.
+  return latestStoreVisitDate(store);
 }
 
 function recordStoreVisit(store, visitedAt) {
@@ -2360,6 +2345,7 @@ function getDaysSince(dateText) {
 }
 
 function formatDate(dateText) {
+  if (!dateText) return "来店記録なし";
   return new Intl.DateTimeFormat("ja-JP", { year: "numeric", month: "long", day: "numeric" }).format(new Date(`${dateText}T00:00:00`));
 }
 
@@ -2389,11 +2375,13 @@ function renderNewStoreClosedDays() {
 }
 
 function visitText(bottle) {
+  if (!latestStoreVisitDate(bottle.store)) return "来店記録なし";
   const days = getDaysSince(latestStoreVisitDate(bottle.store));
   return days === 0 ? "今日来店" : `前回の来店から ${days}日`;
 }
 
 function storeVisitText(store) {
+  if (!latestStoreVisitDate(store)) return "来店記録なし";
   const days = getDaysSince(latestStoreVisitDate(store));
   return days === 0 ? "本日来店" : `最終来店から${days}日`;
 }
@@ -3781,7 +3769,7 @@ function currentBottleDraft() {
     volume: 900,
     remaining: Math.min(100, Math.max(0, Number(formData.get("remaining")))),
     startedAt: formData.get("startedAt"),
-    lastVisitedAt: formData.get("lastVisitedAt"),
+    visitedAt: formData.get("lastVisitedAt"),
     notes: normalizeTextValue(formData.get("notes")),
     newStoreClosedWeekdays: els.storeSelect.value === "__new__"
       ? checkedWeekdays(els.newStoreClosedDays, "newStoreClosedDay")
@@ -3810,10 +3798,10 @@ async function commitBottleDraftOnce(draft, { useNewPhoto = false } = {}) {
     storeSettings[draft.store] = { closedWeekdays: draft.newStoreClosedWeekdays };
     saveStoreSettings();
   }
-  const { newStoreClosedWeekdays: ignoredClosedDays, ...bottle } = draft;
+  const { newStoreClosedWeekdays: ignoredClosedDays, visitedAt, ...bottle } = draft;
   bottles.push(bottle);
   renumberKeeps();
-  recordStoreVisit(bottle.store, bottle.lastVisitedAt);
+  recordStoreVisit(bottle.store, visitedAt);
   saveBottles();
 
   if (preparedLabel) {
