@@ -78,6 +78,28 @@ const server = http.createServer((req,res) => {
     const download=await downloadPromise;
     assert.equal(download.suggestedFilename(),'shochu-single-sync-test.json');
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>window.innerWidth),false);
+    // Explicit re-arm changes only the test record, never starts sync.
+    await page.evaluate(()=>localStorage.setItem('shochu-keep-ledger-single-sync-test-v1',JSON.stringify({
+      phase:'stopped',userId:'synthetic',before:{},
+      startedAt:'2026-10-11T04:17:09.151Z',finishedAt:'2026-10-11T04:17:26.283Z',
+      error:'実行を取り消しました。自動同期は停止したままです。',
+      preflight:{safe:true,pending:0,changedSections:[],sectionDifferences:[],rawBottleDifferences:[],addedVisits:[],missingVisits:[]}
+    })));
+    await page.reload();
+    const rearm=page.getByRole('button',{name:'キャンセル分を1回だけ再許可'});
+    assert.equal(await rearm.isVisible(),true);
+    await rearm.click();
+    await page.waitForFunction(()=>singleSyncTest.read()?.cancelRearmUsed === true && singleSyncTest.read()?.phase === 'ready');
+    assert.equal(await start.isEnabled(),true);
+    assert.equal(await rearm.isVisible(),false);
+    assert.equal(await page.evaluate(()=>singleSyncTest.read().cancelRearmUsed),true);
+    assert.equal(await page.evaluate(()=>singleSyncTest.read().previousAttempt.phase),'stopped');
+    assert.equal(await page.evaluate(()=>window.__databaseCalls),0);
+    await page.reload();
+    assert.equal(await rearm.isVisible(),false);
+    assert.equal(await start.isEnabled(),true);
+    assert.equal(await page.evaluate(()=>cloudSyncTimer),null);
+    assert.equal(await page.evaluate(()=>window.__databaseCalls),0);
     assert.deepEqual(errors,[]); assert.equal(dbRequests,0);
     console.log('PASS: default-on release / guard before authenticated startup / event and login suppression / failed attempt latch / reload without flag / second tab / report download / no overflow / JS errors 0 / DB requests 0');
   } finally { await browser.close(); }

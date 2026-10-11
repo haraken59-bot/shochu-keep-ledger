@@ -109,14 +109,14 @@ const server = http.createServer((req, res) => {
     assert.deepEqual(related.weekdays, [0,5]);
     await context.setOffline(true);
     await page.reload();
-    assert.equal(await page.locator('.app-version').innerText(), 'Ver.35 sync-test（一時検証版）');
+    assert.equal(await page.locator('.app-version').innerText(), 'Ver.35 sync-test 2（一時検証版）');
     assert.equal(await page.evaluate(()=>singleSyncTest.active()), true);
     const cacheState = await page.evaluate(async()=>({
       names: await caches.keys(),
-      fresh: Boolean(await caches.match('./app.js?v=35.0-sync-test-1')),
+      fresh: Boolean(await caches.match('./app.js?v=35.0-sync-test-2')),
       old: Boolean(await caches.match('./app.js?v=35.0')),
     }));
-    assert.deepEqual(cacheState.names,['shochu-keep-ledger-v35-sync-test-1']);
+    assert.deepEqual(cacheState.names,['shochu-keep-ledger-v35-sync-test-2']);
     assert.equal(cacheState.fresh,true); assert.equal(cacheState.old,false);
     const offlineIcons = await page.evaluate(async assets => Promise.all(assets.map(async asset => (await fetch(asset)).status)), assets);
     assert.ok(offlineIcons.every(status => status === 200));

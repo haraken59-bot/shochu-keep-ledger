@@ -53,6 +53,31 @@ const plain = value => JSON.parse(JSON.stringify(value));
   assert.equal(count, 1);
   console.log('PASS: concurrent tabs / double click / reload / URL removal / crash / failure / storage failure / unsupported lock');
 
+  const cancellation = {phase:'stopped',userId:'synthetic',before:{},
+    startedAt:'2026-10-11T04:17:09.151Z',finishedAt:'2026-10-11T04:17:26.283Z',
+    error:'実行を取り消しました。自動同期は停止したままです。',
+    preflight:{safe:true,pending:0,changedSections:[],sectionDifferences:[],rawBottleDifferences:[],addedVisits:[],missingVisits:[]}};
+  for (const override of [{phase:'completed'},{phase:'running'},{result:null},{after:{}},{diff:{}},
+    {syncStartedAt:'now'},{cancelRearmUsed:true},{startedAt:'different'},
+    {error:'network'}, {preflight:{...cancellation.preflight,pending:1}}]) {
+    const rejectedStorage=storage(); rejectedStorage.setItem(key,JSON.stringify({...cancellation,...override}));
+    const rejected=c.createSingleSyncTest(rejectedStorage,locks(),true);
+    assert.equal(rejected.canRearmCancelled(),false); assert.equal(await rejected.rearmCancelled(),false);
+  }
+  const rearmStorage=storage(); rearmStorage.setItem(key,JSON.stringify(cancellation));
+  const rearmLocks=locks(), rearm=c.createSingleSyncTest(rearmStorage,rearmLocks,true);
+  const peer=c.createSingleSyncTest(rearmStorage,rearmLocks,true);
+  const permissions=await Promise.all([rearm.rearmCancelled(),peer.rearmCancelled()]);
+  assert.equal(permissions.filter(Boolean).length,1);
+  assert.equal(rearm.read().phase,'ready'); assert.equal(rearm.active(),true);
+  assert.deepEqual(plain(rearm.read().previousAttempt),cancellation);
+  assert.equal(await c.createSingleSyncTest(rearmStorage,rearmLocks,true).rearmCancelled(),false);
+  let attempts=0;
+  await rearm.run(async()=>{attempts++;throw new Error(cancellation.error);});
+  assert.equal(await rearm.rearmCancelled(),false);
+  await rearm.run(async()=>attempts++); assert.equal(attempts,1);
+  console.log('PASS: reviewed cancellation only / ambiguous and started states rejected / atomic one-time re-arm / original report retained / no network / second cancellation stays stopped');
+
   let writes = 0, restores = 0, timers = 0;
   Object.assign(c, {
     singleSyncTest: {active:()=>true,read:()=>({phase:'running'})}, singleSyncPermit: Symbol(),

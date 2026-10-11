@@ -2,7 +2,21 @@
 
 最終確認日：2026-10-11（日本時間）。このファイルは現在状態、過去履歴は `CHANGELOG.md` を参照する。
 
-## 最新作業：Ver.35 sync-test 一時公開準備（公開結果確認待ち）
+## 最新作業：sync-test 2 キャンセル限定再許可（公開準備）
+
+- スマホから提出されたJSONを確認。phase=stopped、事前差分0・pending0・safe=true、確認ダイアログ取消で同期処理の呼出し前に停止。result/after/diffなし。スマホの検証版表示は提出画像で確認済み。
+- 利用者承認により、この確認済みの開始/終了時刻と取消理由に一致する記録だけ「キャンセル分を1回だけ再許可」できる一時ボタンを追加。同期開始済み/結果あり/不明/別の試行/再許可済みは対象外。
+- 同じWeb Lockで排他し、旧記録をpreviousAttemptに保存。cancelRearmUsedを維持して2回目の解除を拒否。再許可自体は通信なし・readyへ戻すだけ。自動同期抑止は継続。
+- Ver.35 sync-test 2、app.js?v=35.0-sync-test-2、SW shochu-keep-ledger-v35-sync-test-2。単体・来店分離/同期・隔離Edge再許可・PWA回帰成功、JS例外0/実DB要求0。ブラウザ試験は非同期完了待ちの補正後に成功。
+- 実DB同期/復旧/通常版への復帰は未実施。添付JSON（実データ入り）は公開しない。
+
+## 最新作業：Ver.35 sync-test 一時公開済み（実機同期は未実施）
+
+- 公開コミット：af27b2e755f3d32088a011be150aeac1dab1f684。GitHub Pages run 38095294041 success。
+- 公開URL：https://haraken59-bot.github.io/shochu-keep-ledger/?v=35.0-sync-test-1 。index.html/app.js/service-worker.jsはHTTP 200・ローカルと一致。
+- 未ログイン隔離Edge（390px）で検証版表示・ガード有効・ready・同期タイマーなしを確認。公開SWの新キャッシュ/新JSあり、旧JSキーなし。再読込・online・visibilitychange後もDB要求0、JS例外0。同期ボタンは押していない。
+- スマホ実機の表示/更新は利用者確認待ち。旧画面・旧タブを閉じてオンラインで上記URLを開き、表示のみ確認する。起動済み旧コードを配信だけで停止することはできない。
+- 実DB同期・実データ復旧は未実施。ガード解除・通常版への復帰は検証成功後の別作業。公開後の確認記録はローカル文書へ追記（追加デプロイなし）。
 
 - 利用者の一時公開承認に基づき、検証リリースの起動時強制ガードへ変更。URLフラグ不要、Auth生成前に停止ラッチ初期化。ホームにVer.35 sync-test・自動同期停止中を表示。
 - app.js?v=35.0-sync-test-1 / SW shochu-keep-ledger-v35-sync-test-1。manifest/インストールIDを維持。公開作業後もスマホ同期試験・DB更新・復旧は行わない。
@@ -53,14 +67,14 @@
 
 | 項目 | 確認結果 |
 |---|---|
-| 表示 | `Ver. 35`（index.html、公開画面） |
-| 内部更新の識別 | app.jsは `v=35.0`、未変更styles.cssは `v=34.0` |
-| PWAキャッシュ | `shochu-keep-ledger-v35-visit-separation` |
+| 表示 | `Ver.35 sync-test（一時検証版）`（index.html、公開画面） |
+| 内部更新の識別 | app.jsは `v=35.0-sync-test-1`、未変更styles.cssは `v=34.0` |
+| PWAキャッシュ | `shochu-keep-ledger-v35-sync-test-1` |
 | manifest参照 | `manifest.webmanifest?v=22`。これを現在のアプリ版番号と解釈しない |
 | 公開URL | https://haraken59-bot.github.io/shochu-keep-ledger/ |
-| アプリ修正の公開コミット | `6c3bd1732dcd2dcafa0a4ebad50aaf6f9029f3ba` |
+| アプリ修正の公開コミット | `af27b2e755f3d32088a011be150aeac1dab1f684` |
 | ローカルHEAD / リモートmain | 上記修正＋公開結果の文書記録。文書コミット自身のSHAは自己参照させず `git rev-parse HEAD` / `git ls-remote origin refs/heads/main` で確認 |
-| Pages検証 | run `38051405077` success、10/11公開画面Ver.35・主要4画面・JS例外0確認 |
+| Pages検証 | run `38095294041` success、10/11公開検証版表示・ガード・新キャッシュ・JS例外0確認 |
 
 監査修正は公開済み。DBスキーマ・Policy・RPC・Auth・Storage設定変更なし。監査用テスト行・画像の作成/削除あり（後片付け済み）。ZIP・展開ソース・`.codex-remote-attachments/` は公開コミットに含めていない。AGENTS.mdは今回変更していない。
 

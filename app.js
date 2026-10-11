@@ -46,9 +46,33 @@ function createSingleSyncTest(storage, locks, requested) {
     if (requested && storage.getItem(key) === null) save({ phase: "ready", createdAt: new Date().toISOString() });
   } catch { unavailable = true; }
   read();
+  const canRearmCancelled = () => {
+    const record = read();
+    const preflight = record?.preflight;
+    // One specifically reviewed cancellation, not a general reset/retry facility.
+    return !unavailable && record?.phase === "stopped" && !record.cancelRearmUsed
+      && record.startedAt === "2026-10-11T04:17:09.151Z"
+      && record.finishedAt === "2026-10-11T04:17:26.283Z"
+      && record.error === "実行を取り消しました。自動同期は停止したままです。"
+      && Boolean(record.userId && record.before) && preflight?.safe === true && preflight.pending === 0
+      && ["changedSections", "sectionDifferences", "rawBottleDifferences", "addedVisits", "missingVisits"]
+        .every((field) => Array.isArray(preflight[field]) && preflight[field].length === 0)
+      && ["result", "after", "diff", "syncStartedAt", "previousAttempt"].every((field) => !Object.hasOwn(record, field));
+  };
   return {
     active: () => { read(); return latched || unavailable; },
     read,
+    canRearmCancelled,
+    rearmCancelled: async () => {
+      if (unavailable || !locks?.request) throw new Error("安全に再許可できないため停止しています。");
+      return locks.request(key, { ifAvailable: true }, async (lock) => {
+        if (!lock || !canRearmCancelled()) return false;
+        const previousAttempt = read();
+        save({ phase: "ready", createdAt: previousAttempt.createdAt, cancelRearmUsed: true,
+          rearmedAt: new Date().toISOString(), previousAttempt });
+        return true; // Only re-arm. Never start a network operation here.
+      });
+    },
     run: async (task) => {
       if (unavailable || !locks?.request) throw new Error("1回制限の保存または画面間の排他制御が利用できないため停止しました。");
       return locks.request(key, { ifAvailable: true }, async (lock) => {
@@ -146,6 +170,8 @@ async function executeSingleSyncTest() {
       throw new Error("実行を取り消しました。自動同期は停止したままです。");
     }
     singleSyncPermissionAvailable = true;
+    record.syncStartedAt = new Date().toISOString();
+    save();
     record.result = await runCloudSync(singleSyncPermit);
     // Reads only, including after a failed/partially completed cycle. Never retry writes.
     record.after = await readSingleSyncDatabase(record.userId);
@@ -167,16 +193,19 @@ function mountSingleSyncTest() {
   panel.className = "cloud-sync-card";
   panel.id = "single-sync-test-panel";
   const title = document.createElement("strong");
-  title.textContent = "Ver.35 sync-test｜一時検証版・自動同期停止中";
+  title.textContent = "Ver.35 sync-test 2｜一時検証版・自動同期停止中";
   const message = document.createElement("p");
   message.setAttribute("aria-live", "polite");
   const start = document.createElement("button");
   start.textContent = "検証：同期を1回だけ実行";
   const download = document.createElement("button");
   download.textContent = "検証記録を保存";
+  const rearm = document.createElement("button");
+  rearm.textContent = "キャンセル分を1回だけ再許可";
   const refresh = () => {
     const record = singleSyncTest.read();
     start.disabled = record?.phase !== "ready";
+    rearm.hidden = !singleSyncTest.canRearmCancelled();
     message.textContent = `同期検証専用：自動同期・クラウド読込・初回移行を停止中（${record?.phase || "blocked"}）。${record?.error || ""} この画面以外で操作しないでください。URLを戻しても停止は維持されます。`;
   };
   start.addEventListener("click", async () => {
@@ -184,13 +213,21 @@ function mountSingleSyncTest() {
     try { await executeSingleSyncTest(); refresh(); }
     catch (error) { message.textContent = `検証停止：${error.message} 自動同期は停止したままです。`; }
   });
+  rearm.addEventListener("click", async () => {
+    rearm.disabled = true;
+    try {
+      const allowed = await singleSyncTest.rearmCancelled();
+      refresh();
+      if (allowed) message.textContent = "再試験を1回だけ許可しました（ready）。同期はまだ実行していません。自動同期は停止中です。";
+    } catch (error) { message.textContent = `再許可を停止しました：${error.message}`; }
+  });
   download.addEventListener("click", () => {
     const url = URL.createObjectURL(new Blob([JSON.stringify(singleSyncTest.read(), null, 2)], { type: "application/json" }));
     const link = document.createElement("a");
     link.href = url; link.download = "shochu-single-sync-test.json"; link.click();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   });
-  panel.append(title, message, start, download);
+  panel.append(title, message, rearm, start, download);
   els.cloudUpdateBanner.before(panel);
   // No edits/logout while a test cycle is awaiting network responses, in any updated tab.
   for (const type of ["click", "input", "change", "submit", "keydown"]) {
