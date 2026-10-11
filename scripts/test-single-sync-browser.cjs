@@ -51,7 +51,7 @@ const server = http.createServer((req,res) => {
     await page.goto(origin);
     assert.equal(await page.evaluate(()=>window.__guardBeforeAuth),true);
     assert.equal(await page.evaluate(()=>isCloudSyncEnabled()),true);
-    assert.match(await page.locator('.app-version').innerText(),/Ver\.35 sync-test/);
+    assert.match(await page.locator('.app-version').innerText(),/Ver\.35 baseline 1/);
     const start=page.getByRole('button',{name:'検証：同期を1回だけ実行'});
     assert.equal(await start.isDisabled(),true);
     assert.equal(await page.evaluate(()=>singleSyncTest.active()),true);
