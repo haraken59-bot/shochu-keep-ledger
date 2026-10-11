@@ -77,12 +77,25 @@ const server = http.createServer((req,res) => {
     assert.equal(await second.getByRole('button',{name:'検証：同期を1回だけ実行'}).isDisabled(),true);
     const downloadPromise=page.waitForEvent('download');
     const original=await page.evaluate(()=>localStorage.getItem('shochu-keep-ledger-single-sync-test-v1'));
+    await page.evaluate(()=>{
+      const key='shochu-keep-ledger-cloud-migration-v1:synthetic';
+      const value=JSON.parse(localStorage.getItem(key));
+      Object.assign(value,{cloudRevision:'fixture-revision',cloudComparable:'fixture-comparable',cloudCheckedAt:'2026-10-11T00:00:00Z',access_token:'must-not-export'});
+      localStorage.setItem(key,JSON.stringify(value));
+    });
+    const baselineBefore=await page.evaluate(()=>localStorage.getItem('shochu-keep-ledger-cloud-migration-v1:synthetic'));
     await page.getByRole('button',{name:'停止情報を保存（同期しません）'}).click();
     const download=await downloadPromise;
     assert.equal(download.suggestedFilename(),'shochu-sync-diagnostics.json');
     const diagnostic=JSON.parse(fs.readFileSync(await download.path(),'utf8'));
     assert.equal(diagnostic.historicalStop.status,'not_recorded');
     assert.equal(diagnostic.currentState.diagnosticOnly,true);
+    assert.equal(diagnostic.savedBaseline.cloudRevision,'fixture-revision');
+    assert.equal(diagnostic.savedBaseline.cloudComparable,'fixture-comparable');
+    assert.equal(diagnostic.savedBaseline.cloudCheckedAt,'2026-10-11T00:00:00Z');
+    assert.equal(diagnostic.currentCloud.status,'not_fetched');
+    assert.ok(!JSON.stringify(diagnostic).includes('must-not-export'));
+    assert.equal(await page.evaluate(()=>localStorage.getItem('shochu-keep-ledger-cloud-migration-v1:synthetic')),baselineBefore);
     assert.deepEqual(diagnostic.testRecord,JSON.parse(original));
     assert.equal(await page.evaluate(()=>localStorage.getItem('shochu-keep-ledger-single-sync-test-v1')),original);
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>window.innerWidth),false);

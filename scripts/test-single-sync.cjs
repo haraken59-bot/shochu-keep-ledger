@@ -166,7 +166,17 @@ const plain = value => JSON.parse(JSON.stringify(value));
     createCloudRevision:()=> 'new-revision',createCloudComparable:()=> 'current',createLocalComparable:()=> 'current',
     authSession:{user:{id:'test-user'},access_token:'do-not-export-this-token'}});
   await c.executeSingleSyncTest(); await c.runCloudSync(c.singleSyncPermit);
+  const baselineRecord={cloudRevision:'saved-revision',cloudComparable:'saved-comparable',cloudCheckedAt:'2026-10-11T00:00:00Z',access_token:'excluded-secret'};
+  const baselineBefore=JSON.stringify(baselineRecord);
+  c.readCloudMigrationRecord=()=>baselineRecord;
   const report=c.createStoppedSyncDiagnostic();
+  assert.equal(report.savedBaseline.cloudRevision,'saved-revision');
+  assert.equal(report.savedBaseline.cloudComparable,'saved-comparable');
+  assert.equal(report.savedBaseline.cloudCheckedAt,'2026-10-11T00:00:00Z');
+  assert.equal(report.currentCloud.status,'not_fetched');
+  assert.equal(report.localComparableAtCapture,'current');
+  assert.equal(JSON.stringify(baselineRecord),baselineBefore);
+  assert.ok(!JSON.stringify(report).includes('excluded-secret'));
   assert.equal(report.historicalStop.status,'not_recorded');
   assert.equal(report.currentState.baselineRevisionMatchesRecordedAfter,false);
   assert.equal(report.currentState.recordedAfterMatchesLocal,true);

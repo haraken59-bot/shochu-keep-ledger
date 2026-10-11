@@ -205,7 +205,7 @@ function syncDiagnosticError(error) {
 function createStoppedSyncDiagnostic() {
   const record = singleSyncTest.read();
   const report = {
-    type: "shochu-sync-diagnostics", version: "35.0-sync-test-3", capturedAt: new Date().toISOString(),
+type: "shochu-sync-diagnostics", version: "35.0-sync-test-4", capturedAt: new Date().toISOString(),
     historicalStop: record?.syncDiagnostic || { status: "not_recorded", stage: null,
       message: "旧版では詳細未記録。過去の停止箇所・エラーは復元できません。" },
     testRecord: record,
@@ -221,10 +221,20 @@ function createStoppedSyncDiagnostic() {
   };
   try {
     const current = report.currentState;
+    // Allowlist only: never export the migration record or Auth storage wholesale.
+    const baseline = authSession?.user?.id ? readCloudMigrationRecord() : {};
+    report.savedBaseline = {
+      source: "localStorage/cloud-migration-v1 (current authenticated user)",
+      cloudRevision: typeof baseline.cloudRevision === "string" ? baseline.cloudRevision : null,
+      cloudComparable: typeof baseline.cloudComparable === "string" ? baseline.cloudComparable : null,
+      cloudCheckedAt: typeof baseline.cloudCheckedAt === "string" ? baseline.cloudCheckedAt : null,
+    };
+    report.currentCloud = { status: "not_fetched", note: "DB通信なし。testRecord.afterは過去の記録であり現在クラウドではありません。" };
     current.pendingRemaining = Object.keys(loadPendingRemainingChanges()).length;
     current.pendingVisitDeletes = Object.keys(loadPendingVisitDeletes()).length;
     current.pendingLabels = Object.keys(loadPendingLabels()).length;
     const local = createLocalComparable();
+    report.localComparableAtCapture = local;
     current.baselineComparableMatchesLocal = observedCloudComparable ? observedCloudComparable === local : null;
     const snapshot = record?.after;
     if (current.sameUserAsTest && snapshot) {
@@ -243,7 +253,7 @@ function mountSingleSyncTest() {
   panel.className = "cloud-sync-card";
   panel.id = "single-sync-test-panel";
   const title = document.createElement("strong");
-  title.textContent = "Ver.35 sync-test 3｜診断専用・同期停止中";
+title.textContent = "Ver.35 sync-test 4｜比較基準診断・同期停止中";
   const message = document.createElement("p");
   message.setAttribute("aria-live", "polite");
   const start = document.createElement("button");
