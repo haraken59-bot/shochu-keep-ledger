@@ -53,7 +53,7 @@ const server = http.createServer((req,res) => {
     assert.equal(await page.evaluate(()=>isCloudSyncEnabled()),true);
     assert.match(await page.locator('.app-version').innerText(),/Ver\.35 sync-test/);
     const start=page.getByRole('button',{name:'検証：同期を1回だけ実行'});
-    assert.equal(await start.isEnabled(),true);
+    assert.equal(await start.isDisabled(),true);
     assert.equal(await page.evaluate(()=>singleSyncTest.active()),true);
     await page.evaluate(()=>{
       window.dispatchEvent(new Event('online'));
@@ -63,9 +63,11 @@ const server = http.createServer((req,res) => {
     });
     assert.equal(await page.evaluate(()=>cloudSyncTimer),null);
     assert.equal(await page.evaluate(()=>window.__databaseCalls),0);
-    await page.evaluate(()=>renderAuthState(null));
-    await start.click(); // No auth: consumes and fails closed, without touching DB.
-    await page.waitForFunction(()=>singleSyncTest.read()?.phase==='stopped');
+    await page.evaluate(async()=>{ await executeSingleSyncTest(); await runCloudSync(); });
+    await page.evaluate(()=>localStorage.setItem('shochu-keep-ledger-single-sync-test-v1',JSON.stringify({
+      phase:'stopped',userId:'synthetic',error:'同期未完了',
+      after:{stores:[],bottles:[],store_visits:[],remaining_updates:[],brand_labels:[]}
+    })));
     assert.equal(await start.isDisabled(),true);
     await page.goto(origin);
     assert.equal(await start.isDisabled(),true);
@@ -74,9 +76,15 @@ const server = http.createServer((req,res) => {
     await second.goto(origin+'/?syncTest=once');
     assert.equal(await second.getByRole('button',{name:'検証：同期を1回だけ実行'}).isDisabled(),true);
     const downloadPromise=page.waitForEvent('download');
-    await page.getByRole('button',{name:'検証記録を保存'}).click();
+    const original=await page.evaluate(()=>localStorage.getItem('shochu-keep-ledger-single-sync-test-v1'));
+    await page.getByRole('button',{name:'停止情報を保存（同期しません）'}).click();
     const download=await downloadPromise;
-    assert.equal(download.suggestedFilename(),'shochu-single-sync-test.json');
+    assert.equal(download.suggestedFilename(),'shochu-sync-diagnostics.json');
+    const diagnostic=JSON.parse(fs.readFileSync(await download.path(),'utf8'));
+    assert.equal(diagnostic.historicalStop.status,'not_recorded');
+    assert.equal(diagnostic.currentState.diagnosticOnly,true);
+    assert.deepEqual(diagnostic.testRecord,JSON.parse(original));
+    assert.equal(await page.evaluate(()=>localStorage.getItem('shochu-keep-ledger-single-sync-test-v1')),original);
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>window.innerWidth),false);
     // Explicit re-arm changes only the test record, never starts sync.
     await page.evaluate(()=>localStorage.setItem('shochu-keep-ledger-single-sync-test-v1',JSON.stringify({
@@ -87,20 +95,16 @@ const server = http.createServer((req,res) => {
     })));
     await page.reload();
     const rearm=page.getByRole('button',{name:'キャンセル分を1回だけ再許可'});
-    assert.equal(await rearm.isVisible(),true);
-    await rearm.click();
-    await page.waitForFunction(()=>singleSyncTest.read()?.cancelRearmUsed === true && singleSyncTest.read()?.phase === 'ready');
-    assert.equal(await start.isEnabled(),true);
     assert.equal(await rearm.isVisible(),false);
-    assert.equal(await page.evaluate(()=>singleSyncTest.read().cancelRearmUsed),true);
-    assert.equal(await page.evaluate(()=>singleSyncTest.read().previousAttempt.phase),'stopped');
+    assert.equal(await start.isDisabled(),true);
+    assert.equal(await page.evaluate(()=>singleSyncTest.read().phase),'stopped');
     assert.equal(await page.evaluate(()=>window.__databaseCalls),0);
     await page.reload();
     assert.equal(await rearm.isVisible(),false);
-    assert.equal(await start.isEnabled(),true);
+    assert.equal(await start.isDisabled(),true);
     assert.equal(await page.evaluate(()=>cloudSyncTimer),null);
     assert.equal(await page.evaluate(()=>window.__databaseCalls),0);
     assert.deepEqual(errors,[]); assert.equal(dbRequests,0);
-    console.log('PASS: default-on release / guard before authenticated startup / event and login suppression / failed attempt latch / reload without flag / second tab / report download / no overflow / JS errors 0 / DB requests 0');
+    console.log('PASS: diagnostic-only / guard before Auth / events suppressed / direct sync blocked / immutable record download / rearm hidden / reload and second tab / no overflow / JS errors 0 / DB requests 0');
   } finally { await browser.close(); }
 })().catch(error=>{console.error(error);process.exitCode=1;}).finally(()=>server.close());

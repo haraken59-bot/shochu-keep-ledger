@@ -8,9 +8,10 @@ function fn(name) {
   assert.ok(start >= 0, name);
   return source.slice(start, source.indexOf('\n}', start) + 2);
 }
-const c = vm.createContext({ console, Date, Map, Set, JSON });
+const c = vm.createContext({ console, Date, Map, Set, JSON, SINGLE_SYNC_DIAGNOSTIC_ONLY:false });
 for (const name of ['createSingleSyncTest', 'singleSyncDatabaseDiff', 'singleSyncPreflight',
-  'scheduleCloudSync', 'runCloudSync', 'restoreFromSupabase', 'migrateLocalDataToSupabase', 'executeSingleSyncTest']) {
+  'scheduleCloudSync', 'runCloudSync', 'restoreFromSupabase', 'migrateLocalDataToSupabase', 'executeSingleSyncTest',
+  'syncDiagnosticError', 'createStoppedSyncDiagnostic']) {
   vm.runInContext(fn(name), c);
 }
 const key = 'shochu-keep-ledger-single-sync-test-v1';
@@ -82,7 +83,7 @@ const plain = value => JSON.parse(JSON.stringify(value));
   Object.assign(c, {
     singleSyncTest: {active:()=>true,read:()=>({phase:'running'})}, singleSyncPermit: Symbol(),
     singleSyncPermissionAvailable: false, cloudSyncPaused: false,
-    cloudUpdateAvailable: false, cloudSyncPromise: null, cloudSyncQueued: false, cloudSyncTimer: null,
+    cloudUpdateAvailable: false, cloudUpdateMode:'', cloudSyncPromise: null, cloudSyncQueued: false, cloudSyncTimer: null,
     isCloudSyncEnabled: () => true, navigator: {onLine:true},
     window: { clearTimeout(){}, setTimeout(){timers++;} }, setCloudSyncState(){},
     inspectCloudUpdates: async () => ({safeToSync:true}),
@@ -155,4 +156,33 @@ const plain = value => JSON.parse(JSON.stringify(value));
   assert.ok(stopped.before); assert.equal(stopped.preflight.safe,false);
   c.runCloudSync = realRun;
   console.log('PASS: end-to-end single attempt / persistent before-after report / unsafe preflight zero writes');
+
+  // Diagnostic release cannot consume a permit, write, or re-run the test.
+  c.SINGLE_SYNC_DIAGNOSTIC_ONLY = true;
+  const stoppedRecord = {phase:'stopped',userId:'test-user',after:before,error:'old generic error'};
+  c.singleSyncTest = {active:()=>true,read:()=>stoppedRecord,run:()=>{throw Error('must not retry');}};
+  const original=JSON.stringify(stoppedRecord), writesBefore= writes;
+  Object.assign(c,{cloudSyncState:'idle',observedCloudRevision:'old-revision',observedCloudComparable:'old-comparable',
+    createCloudRevision:()=> 'new-revision',createCloudComparable:()=> 'current',createLocalComparable:()=> 'current',
+    authSession:{user:{id:'test-user'},access_token:'do-not-export-this-token'}});
+  await c.executeSingleSyncTest(); await c.runCloudSync(c.singleSyncPermit);
+  const report=c.createStoppedSyncDiagnostic();
+  assert.equal(report.historicalStop.status,'not_recorded');
+  assert.equal(report.currentState.baselineRevisionMatchesRecordedAfter,false);
+  assert.equal(report.currentState.recordedAfterMatchesLocal,true);
+  assert.equal(JSON.stringify(stoppedRecord),original); assert.equal(writes,writesBefore);
+  assert.ok(!JSON.stringify(report).includes('do-not-export-this-token'));
+  const redacted=c.syncDiagnosticError({message:'Bearer secret eyJabc.def.ghi https://a.invalid/?token=secret sb_secret_abcd'});
+  assert.ok(!redacted.message.includes('eyJabc')); assert.ok(!redacted.message.includes('token=secret'));
+  console.log('PASS: diagnostics read only / previous failure not invented / no session token export / no sync/permit consumption');
+
+  // Future instrumentation, synthetic execution only. Production flag remains true.
+  c.SINGLE_SYNC_DIAGNOSTIC_ONLY = false;
+  c.singleSyncTest={active:()=>false};
+  c.inspectCloudUpdates=async()=>{throw Object.assign(Error('synthetic denial'),{code:'42501'});};
+  const entries=[];
+  await c.runCloudSync(undefined,entry=>entries.push(entry));
+  assert.equal(entries.at(-1).stage,'inspect_cloud_updates');assert.equal(entries.at(-1).status,'error');
+  assert.equal(entries.at(-1).error.code,'42501');assert.equal(writes,writesBefore);
+  console.log('PASS: actual error stage/code retained without writes');
 })().catch(error => { console.error(error); process.exitCode=1; });

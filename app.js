@@ -18,6 +18,7 @@ const PUBLIC_APP_URL = "https://haraken59-bot.github.io/shochu-keep-ledger/";
 // Temporary release only. Remove only after the one-shot audit and explicit approval.
 // Initialise before loading local data, registering events, or creating the Auth client.
 const SINGLE_SYNC_TEST_RELEASE = true;
+const SINGLE_SYNC_DIAGNOSTIC_ONLY = true;
 const singleSyncTest = createSingleSyncTest(localStorage, navigator.locks,
   SINGLE_SYNC_TEST_RELEASE || new URLSearchParams(window.location.search).get("syncTest") === "once");
 const singleSyncPermit = Symbol("single-sync-test");
@@ -155,6 +156,7 @@ function singleSyncPreflight(before) {
 }
 
 async function executeSingleSyncTest() {
+  if (SINGLE_SYNC_DIAGNOSTIC_ONLY) return;
   return singleSyncTest.run(async (record, save) => {
     if (!authSession?.user || !isCloudSyncEnabled() || navigator.onLine === false || cloudSyncPromise) {
       throw new Error("ログイン・同期設定・オンライン状態を確認してください。再試行は停止中です。");
@@ -172,7 +174,10 @@ async function executeSingleSyncTest() {
     singleSyncPermissionAvailable = true;
     record.syncStartedAt = new Date().toISOString();
     save();
-    record.result = await runCloudSync(singleSyncPermit);
+    record.result = await runCloudSync(singleSyncPermit, (entry) => {
+      record.syncDiagnostic = { ...entry, recordedAt: new Date().toISOString() };
+      save();
+    });
     // Reads only, including after a failed/partially completed cycle. Never retry writes.
     record.after = await readSingleSyncDatabase(record.userId);
     record.diff = singleSyncDatabaseDiff(record.before, record.after);
@@ -187,13 +192,58 @@ async function executeSingleSyncTest() {
   });
 }
 
+function syncDiagnosticError(error) {
+  const redact = (value) => String(value || "")
+    .replace(/Bearer\s+\S+/gi, "Bearer [redacted]")
+    .replace(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "[redacted JWT]")
+    .replace(/sb_(?:secret|publishable)_[A-Za-z0-9_-]+/g, "[redacted key]")
+    .replace(/https?:\/\/[^\s]+/g, "[URL omitted]").slice(0, 800);
+  return { name: redact(error?.name), code: redact(error?.code), message: redact(error?.message) };
+}
+
+// Local reads only. Never query Supabase, acknowledge a revision, reset a latch, or retry.
+function createStoppedSyncDiagnostic() {
+  const record = singleSyncTest.read();
+  const report = {
+    type: "shochu-sync-diagnostics", version: "35.0-sync-test-3", capturedAt: new Date().toISOString(),
+    historicalStop: record?.syncDiagnostic || { status: "not_recorded", stage: null,
+      message: "旧版では詳細未記録。過去の停止箇所・エラーは復元できません。" },
+    testRecord: record,
+    currentState: {
+      note: "以下は現在状態です。過去の停止時点とは異なり、停止原因の確定情報ではありません。",
+      guardActive: singleSyncTest.active(), diagnosticOnly: SINGLE_SYNC_DIAGNOSTIC_ONLY,
+      authenticated: Boolean(authSession?.user), sameUserAsTest: Boolean(authSession?.user && authSession.user.id === record?.userId),
+      online: navigator.onLine, migrationCompleted: isCloudSyncEnabled(),
+      syncState: cloudSyncState, syncInFlight: Boolean(cloudSyncPromise), syncQueued: cloudSyncQueued,
+      syncTimerScheduled: cloudSyncTimer !== null, cloudUpdateAvailable, cloudUpdateMode,
+      baselineRevisionPresent: Boolean(observedCloudRevision), baselineComparablePresent: Boolean(observedCloudComparable),
+    },
+  };
+  try {
+    const current = report.currentState;
+    current.pendingRemaining = Object.keys(loadPendingRemainingChanges()).length;
+    current.pendingVisitDeletes = Object.keys(loadPendingVisitDeletes()).length;
+    current.pendingLabels = Object.keys(loadPendingLabels()).length;
+    const local = createLocalComparable();
+    current.baselineComparableMatchesLocal = observedCloudComparable ? observedCloudComparable === local : null;
+    const snapshot = record?.after;
+    if (current.sameUserAsTest && snapshot) {
+      const args = [snapshot.stores, snapshot.bottles, snapshot.store_visits, snapshot.brand_labels];
+      current.baselineRevisionMatchesRecordedAfter = observedCloudRevision ? observedCloudRevision === createCloudRevision(...args) : null;
+      current.recordedAfterMatchesLocal = createCloudComparable(...args) === local;
+      current.recordedAfterComparedAt = record.finishedAt || null;
+    }
+  } catch (error) { report.collectionError = syncDiagnosticError(error); }
+  return report;
+}
+
 function mountSingleSyncTest() {
   if (!singleSyncTest.active()) return;
   const panel = document.createElement("section");
   panel.className = "cloud-sync-card";
   panel.id = "single-sync-test-panel";
   const title = document.createElement("strong");
-  title.textContent = "Ver.35 sync-test 2｜一時検証版・自動同期停止中";
+  title.textContent = "Ver.35 sync-test 3｜診断専用・同期停止中";
   const message = document.createElement("p");
   message.setAttribute("aria-live", "polite");
   const start = document.createElement("button");
@@ -202,10 +252,14 @@ function mountSingleSyncTest() {
   download.textContent = "検証記録を保存";
   const rearm = document.createElement("button");
   rearm.textContent = "キャンセル分を1回だけ再許可";
+  const diagnose = document.createElement("button");
+  diagnose.textContent = "停止情報を保存（同期しません）";
+  const diagnosticStatus = document.createElement("p");
+  diagnosticStatus.setAttribute("aria-live", "polite");
   const refresh = () => {
     const record = singleSyncTest.read();
-    start.disabled = record?.phase !== "ready";
-    rearm.hidden = !singleSyncTest.canRearmCancelled();
+    start.disabled = SINGLE_SYNC_DIAGNOSTIC_ONLY || record?.phase !== "ready";
+    rearm.hidden = SINGLE_SYNC_DIAGNOSTIC_ONLY || !singleSyncTest.canRearmCancelled();
     message.textContent = `同期検証専用：自動同期・クラウド読込・初回移行を停止中（${record?.phase || "blocked"}）。${record?.error || ""} この画面以外で操作しないでください。URLを戻しても停止は維持されます。`;
   };
   start.addEventListener("click", async () => {
@@ -214,6 +268,7 @@ function mountSingleSyncTest() {
     catch (error) { message.textContent = `検証停止：${error.message} 自動同期は停止したままです。`; }
   });
   rearm.addEventListener("click", async () => {
+    if (SINGLE_SYNC_DIAGNOSTIC_ONLY) return;
     rearm.disabled = true;
     try {
       const allowed = await singleSyncTest.rearmCancelled();
@@ -221,13 +276,23 @@ function mountSingleSyncTest() {
       if (allowed) message.textContent = "再試験を1回だけ許可しました（ready）。同期はまだ実行していません。自動同期は停止中です。";
     } catch (error) { message.textContent = `再許可を停止しました：${error.message}`; }
   });
+  diagnose.addEventListener("click", () => {
+    const report = createStoppedSyncDiagnostic();
+    const url = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2)], { type: "application/json" }));
+    const link = document.createElement("a");
+    link.href = url; link.download = "shochu-sync-diagnostics.json"; link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    diagnosticStatus.textContent = report.historicalStop.status === "not_recorded"
+      ? "過去の詳細は未記録です。保存済み検証記録と現在状態を出力しました。同期・DB通信はしていません。"
+      : `記録された停止段階：${report.historicalStop.stage}／${report.historicalStop.status}。同期・DB通信はしていません。`;
+  });
   download.addEventListener("click", () => {
     const url = URL.createObjectURL(new Blob([JSON.stringify(singleSyncTest.read(), null, 2)], { type: "application/json" }));
     const link = document.createElement("a");
     link.href = url; link.download = "shochu-single-sync-test.json"; link.click();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   });
-  panel.append(title, message, rearm, start, download);
+  panel.append(title, message, rearm, start, download, diagnose, diagnosticStatus);
   els.cloudUpdateBanner.before(panel);
   // No edits/logout while a test cycle is awaiting network responses, in any updated tab.
   for (const type of ["click", "input", "change", "submit", "keydown"]) {
@@ -1762,18 +1827,28 @@ async function syncCloudSnapshot() {
   await syncPendingCloudLabels(userId);
 }
 
-async function runCloudSync(permit) {
+async function runCloudSync(permit, reportDiagnostic = () => {}) {
+  if (SINGLE_SYNC_DIAGNOSTIC_ONLY) return null;
+  let diagnosticStage = "entry";
+  const trace = (stage, status, extra = {}) => {
+    diagnosticStage = stage;
+    reportDiagnostic({ stage, status, ...extra });
+  };
   if (singleSyncTest.active()) {
-    if (permit !== singleSyncPermit || !singleSyncPermissionAvailable || singleSyncTest.read()?.phase !== "running") return null;
+    if (permit !== singleSyncPermit || !singleSyncPermissionAvailable || singleSyncTest.read()?.phase !== "running") {
+      trace("permission", "blocked"); return null;
+    }
     singleSyncPermissionAvailable = false;
   }
   if (cloudSyncPromise) {
+    trace("existing_sync", "queued");
     cloudSyncQueued = true;
     return cloudSyncPromise;
   }
-  if (cloudUpdateAvailable) return null;
-  if (!isCloudSyncEnabled()) return null;
+  if (cloudUpdateAvailable) { trace("known_cloud_update", "blocked"); return null; }
+  if (!isCloudSyncEnabled()) { trace("sync_not_enabled", "blocked"); return null; }
   if (navigator.onLine === false) {
+    trace("offline", "blocked");
     setCloudSyncState("pending", "通信できるようになったら自動で再試行します。端末内のデータは保存済みです。");
     return null;
   }
@@ -1781,8 +1856,10 @@ async function runCloudSync(permit) {
   cloudSyncPromise = (async () => {
     setCloudSyncState("checking", "クラウドに新しい変更がないか確認しています…");
     try {
+      trace("inspect_cloud_updates", "started");
       const inspection = await inspectCloudUpdates();
       if (!inspection.safeToSync) {
+        trace("inspect_cloud_updates", "blocked", { autoApply: Boolean(inspection.autoApply), mode: cloudUpdateMode });
         if (inspection.autoApply && !singleSyncTest.active()) {
           await restoreFromSupabase({
             snapshot: inspection.snapshot,
@@ -1794,14 +1871,18 @@ async function runCloudSync(permit) {
         }
         return;
       }
+      trace("local_safety_check", "started");
       if (singleSyncTest.active() && (authSession?.user?.id !== singleSyncExpectedState?.userId
         || createLocalComparable() !== singleSyncExpectedState?.comparable
         || hasPendingCloudChanges())) throw new Error("検証開始後に端末の状態が変わったため停止しました。");
       setCloudSyncState("syncing", "端末内の変更をクラウドへ保存しています…");
+      trace("sync_cloud_snapshot", "started");
       await syncCloudSnapshot();
+      trace("fetch_after_sync", "started");
       const syncedSnapshot = await fetchCloudRestoreSnapshot();
       replaceRemainingHistoryFromCloud(syncedSnapshot.remainingHistory);
       if (syncedSnapshot.comparable !== createLocalComparable()) {
+        trace("compare_after_sync", "blocked");
         const messages = describeCloudChanges(syncedSnapshot);
         const localUnchanged = Boolean(
           observedCloudComparable
@@ -1811,12 +1892,15 @@ async function runCloudSync(permit) {
         setCloudUpdateAvailability(true, syncedSnapshot, localUnchanged ? "available" : "conflict", messages);
         return;
       }
+      trace("remember_revision", "started");
       rememberCloudRevision(syncedSnapshot);
       setCloudUpdateAvailability(false);
       const time = new Intl.DateTimeFormat("ja-JP", { hour: "2-digit", minute: "2-digit" }).format(new Date());
       setCloudSyncState("idle", `${time}にクラウド保存を確認しました。`);
+      trace("complete", "synced");
       return "synced";
     } catch (error) {
+      trace(diagnosticStage, "error", { error: syncDiagnosticError(error) });
       console.error("Cloud sync failed", error);
       setCloudSyncState("pending", "クラウドへ保存できませんでした。端末内には保存済みで、通信回復後に再試行します。");
     } finally {
