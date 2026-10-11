@@ -117,7 +117,33 @@ const server = http.createServer((req,res) => {
     assert.equal(await start.isDisabled(),true);
     assert.equal(await page.evaluate(()=>cloudSyncTimer),null);
     assert.equal(await page.evaluate(()=>window.__databaseCalls),0);
+    // UI only: seed isolated fixture and restore Auth without invoking sync.
+    await page.evaluate(()=>{
+      localStorage.setItem('shochu-keep-ledger-single-sync-test-v1',JSON.stringify({phase:'stopped',userId:'synthetic'}));
+      localStorage.setItem('shochu-keep-ledger-cloud-migration-v1:synthetic',JSON.stringify({completedAt:'2026-10-11T00:00:00Z',comparisonSchema:'v35-r2-c2'}));
+      renderAuthState(null);
+    });
+    assert.equal(await start.isDisabled(),true);
+    await page.evaluate(()=>window.__signedIn());
+    assert.equal(await start.isEnabled(),true);
+    await page.reload();
+    // Init script deliberately restores an unmigrated fixture: must remain disabled.
+    assert.equal(await start.isDisabled(),true);
+    await page.evaluate(()=>{
+      localStorage.setItem('shochu-keep-ledger-cloud-migration-v1:synthetic',JSON.stringify({completedAt:'2026-10-11T00:00:00Z',comparisonSchema:'v35-r2-c2'}));
+      window.__signedIn();
+    });
+    assert.equal(await start.isEnabled(),true);
+    await page.evaluate(()=>{
+      localStorage.setItem('shochu-keep-ledger-single-sync-test-v1',JSON.stringify({phase:'stopped',userId:'synthetic',postBaselineAttempt:true}));
+      window.__signedIn();
+    });
+    assert.equal(await start.isDisabled(),true);
+    await page.evaluate(()=>renderAuthState({user:{id:'other'}}));
+    assert.equal(await start.isDisabled(),true);
+    assert.equal(await page.evaluate(()=>window.__databaseCalls),0);
     assert.deepEqual(errors,[]); assert.equal(dbRequests,0);
+    console.log('PASS: auth absent disabled / restored migrated user enabled / unmigrated, consumed, other user disabled / UI refresh only / no sync');
     console.log('PASS: diagnostic-only / guard before Auth / events suppressed / direct sync blocked / immutable record download / rearm hidden / reload and second tab / no overflow / JS errors 0 / DB requests 0');
   } finally { await browser.close(); }
 })().catch(error=>{console.error(error);process.exitCode=1;}).finally(()=>server.close());

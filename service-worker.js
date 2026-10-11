@@ -1,10 +1,10 @@
-const CACHE_NAME = "shochu-keep-ledger-v35-sync-test-5";
+const CACHE_NAME = "shochu-keep-ledger-v35-sync-test-5.1";
 const APP_FILES = ["./icons/icon-192-v20261011.png","./icons/icon-512-v20261011.png","./icons/icon-maskable-192-v20261011.png","./icons/icon-maskable-512-v20261011.png",
   "./",
   "./index.html",
   "./styles.css?v=34.0",
   "./supabase-config.js?v=22",
-  "./app.js?v=35.0-sync-test-5",
+  "./app.js?v=35.0-sync-test-5.1",
   "./manifest.webmanifest?v=22",
   "./icons/favicon-20261006.ico",
   "./icons/icon-32-20261006.png",

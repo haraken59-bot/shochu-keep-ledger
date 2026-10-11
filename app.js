@@ -326,7 +326,7 @@ async function migrateComparisonBaselineV35() {
 function createStoppedSyncDiagnostic() {
   const record = singleSyncTest.read();
   const report = {
-type: "shochu-sync-diagnostics", version: "35.0-sync-test-5", capturedAt: new Date().toISOString(),
+type: "shochu-sync-diagnostics", version: "35.0-sync-test-5.1", capturedAt: new Date().toISOString(),
     historicalStop: record?.syncDiagnostic || { status: "not_recorded", stage: null,
       message: "旧版では詳細未記録。過去の停止箇所・エラーは復元できません。" },
     testRecord: record,
@@ -374,7 +374,7 @@ function mountSingleSyncTest() {
   panel.className = "cloud-sync-card";
   panel.id = "single-sync-test-panel";
   const title = document.createElement("strong");
-title.textContent = "Ver.35 sync-test 5｜基準移行後1回検証・自動同期停止中";
+title.textContent = "Ver.35 sync-test 5.1｜ログイン復元表示修正・自動同期停止中";
   const message = document.createElement("p");
   message.setAttribute("aria-live", "polite");
   const start = document.createElement("button");
@@ -403,7 +403,9 @@ title.textContent = "Ver.35 sync-test 5｜基準移行後1回検証・自動同�
   const refresh = () => {
     const record = singleSyncTest.read();
     start.disabled = SINGLE_SYNC_DIAGNOSTIC_ONLY || (POST_BASELINE_SYNC_TEST
-      ? record?.phase !== 'stopped' || Boolean(record.postBaselineAttempt) || readCloudMigrationRecord().comparisonSchema !== 'v35-r2-c2' : record?.phase !== "ready");
+      ? !authSession?.user || record?.userId !== authSession.user.id || !singleSyncTest.active()
+        || record?.phase !== 'stopped' || Boolean(record.postBaselineAttempt)
+        || readCloudMigrationRecord().comparisonSchema !== 'v35-r2-c2' : record?.phase !== "ready");
     rearm.hidden = POST_BASELINE_SYNC_TEST || SINGLE_SYNC_DIAGNOSTIC_ONLY || !singleSyncTest.canRearmCancelled();
     migrateBaseline.hidden = POST_BASELINE_SYNC_TEST;
     message.textContent = `同期検証専用：自動同期・クラウド読込・初回移行を停止中（${record?.phase || "blocked"}）。${record?.error || ""} この画面以外で操作しないでください。URLを戻しても停止は維持されます。`;
@@ -449,6 +451,7 @@ title.textContent = "Ver.35 sync-test 5｜基準移行後1回検証・自動同�
     }, true);
   }
   window.addEventListener("storage", refresh);
+  window.addEventListener("shochu-auth-state-rendered", refresh);
   refresh();
 }
 
@@ -726,6 +729,7 @@ function renderAuthState(session = null) {
   renderCloudUpdateBanner();
   renderCloudMigrationState();
   renderCloudSyncState();
+  window.dispatchEvent(new Event("shochu-auth-state-rendered"));
 }
 
 async function initializeSupabaseAuth() {
