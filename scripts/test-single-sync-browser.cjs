@@ -51,7 +51,7 @@ const server = http.createServer((req,res) => {
     await page.goto(origin);
     assert.equal(await page.evaluate(()=>window.__guardBeforeAuth),true);
     assert.equal(await page.evaluate(()=>isCloudSyncEnabled()),true);
-    assert.match(await page.locator('.app-version').innerText(),/Ver\.35 baseline 1/);
+    assert.match(await page.locator('.app-version').innerText(),/Ver\.35 sync-test 5/);
     const start=page.getByRole('button',{name:'検証：同期を1回だけ実行'});
     assert.equal(await start.isDisabled(),true);
     assert.equal(await page.evaluate(()=>singleSyncTest.active()),true);
@@ -89,7 +89,7 @@ const server = http.createServer((req,res) => {
     assert.equal(download.suggestedFilename(),'shochu-sync-diagnostics.json');
     const diagnostic=JSON.parse(fs.readFileSync(await download.path(),'utf8'));
     assert.equal(diagnostic.historicalStop.status,'not_recorded');
-    assert.equal(diagnostic.currentState.diagnosticOnly,true);
+    assert.equal(diagnostic.currentState.diagnosticOnly,false);
     assert.equal(diagnostic.savedBaseline.cloudRevision,'fixture-revision');
     assert.equal(diagnostic.savedBaseline.cloudComparable,'fixture-comparable');
     assert.equal(diagnostic.savedBaseline.cloudCheckedAt,'2026-10-11T00:00:00Z');

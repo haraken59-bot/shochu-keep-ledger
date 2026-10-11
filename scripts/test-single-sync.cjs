@@ -8,7 +8,7 @@ function fn(name) {
   assert.ok(start >= 0, name);
   return source.slice(start, source.indexOf('\n}', start) + 2);
 }
-const c = vm.createContext({ console, Date, Map, Set, JSON, SINGLE_SYNC_DIAGNOSTIC_ONLY:false });
+const c = vm.createContext({ console, Date, Map, Set, JSON, SINGLE_SYNC_DIAGNOSTIC_ONLY:false, POST_BASELINE_SYNC_TEST:false });
 for (const name of ['createSingleSyncTest', 'singleSyncDatabaseDiff', 'singleSyncPreflight',
   'scheduleCloudSync', 'runCloudSync', 'restoreFromSupabase', 'migrateLocalDataToSupabase', 'executeSingleSyncTest',
   'syncDiagnosticError', 'createStoppedSyncDiagnostic']) {

@@ -18,7 +18,8 @@ const PUBLIC_APP_URL = "https://haraken59-bot.github.io/shochu-keep-ledger/";
 // Temporary release only. Remove only after the one-shot audit and explicit approval.
 // Initialise before loading local data, registering events, or creating the Auth client.
 const SINGLE_SYNC_TEST_RELEASE = true;
-const SINGLE_SYNC_DIAGNOSTIC_ONLY = true;
+const SINGLE_SYNC_DIAGNOSTIC_ONLY = false;
+const POST_BASELINE_SYNC_TEST = true;
 const singleSyncTest = createSingleSyncTest(localStorage, navigator.locks,
   SINGLE_SYNC_TEST_RELEASE || new URLSearchParams(window.location.search).get("syncTest") === "once");
 const singleSyncPermit = Symbol("single-sync-test");
@@ -64,6 +65,19 @@ function createSingleSyncTest(storage, locks, requested) {
     active: () => { read(); return latched || unavailable; },
     read,
     canRearmCancelled,
+    runAfterBaseline: async (task) => {
+      if (unavailable || !locks?.request) throw new Error('安全な1回制限を利用できません。');
+      return locks.request(key, {ifAvailable:true}, async lock => {
+        const previous = read();
+        if (!lock || previous?.phase !== 'stopped' || previous.postBaselineAttempt) return;
+        const record = {phase:'running', postBaselineAttempt:true, startedAt:new Date().toISOString(), previousAttempt:previous};
+        save(record); // Failed preflight/cancel/crash also consumes this single attempt.
+        try { await task(record,()=>save(record)); record.phase='completed'; }
+        catch(error) { record.phase='stopped';record.error=error.message; }
+        finally { record.finishedAt=new Date().toISOString();save(record); }
+        return record;
+      });
+    },
     rearmCancelled: async () => {
       if (unavailable || !locks?.request) throw new Error("安全に再許可できないため停止しています。");
       return locks.request(key, { ifAvailable: true }, async (lock) => {
@@ -157,17 +171,23 @@ function singleSyncPreflight(before) {
 
 async function executeSingleSyncTest() {
   if (SINGLE_SYNC_DIAGNOSTIC_ONLY) return;
-  return singleSyncTest.run(async (record, save) => {
+  const run = POST_BASELINE_SYNC_TEST ? singleSyncTest.runAfterBaseline : singleSyncTest.run;
+  return run(async (record, save) => {
     if (!authSession?.user || !isCloudSyncEnabled() || navigator.onLine === false || cloudSyncPromise) {
       throw new Error("ログイン・同期設定・オンライン状態を確認してください。再試行は停止中です。");
     }
     record.userId = authSession.user.id;
+    if (POST_BASELINE_SYNC_TEST && record.previousAttempt?.userId !== record.userId) throw Error('前回記録とログイン利用者が一致しません。');
     record.before = await readSingleSyncDatabase(record.userId);
     record.preflight = singleSyncPreflight(record.before);
+    if (POST_BASELINE_SYNC_TEST) {
+      record.baselineCheck = checkPostBaselineSync(record.before);
+    }
     save();
     if (!record.preflight.safe) throw new Error("同期前の差分が安全条件を超えたため、書き込まず停止しました。検証記録を確認してください。");
     const unchanged = createLocalComparable();
     singleSyncExpectedState = { userId: record.userId, comparable: unchanged };
+    if (POST_BASELINE_SYNC_TEST) singleSyncExpectedState.baseline = localStorage.getItem(cloudMigrationStorageKey());
     if (!window.confirm(`同期はこの1回だけです。来店日追加予定：${record.preflight.addedVisits.length}件。ボトル変更：0件。実行しますか？`)) {
       throw new Error("実行を取り消しました。自動同期は停止したままです。");
     }
@@ -184,12 +204,46 @@ async function executeSingleSyncTest() {
     save();
     if (record.result !== "synced") throw new Error("同期が完了しなかったため停止しました。競合を自動採用・復旧していません。");
     if (unchanged !== createLocalComparable()) throw new Error("試験中に端末データが変化したため停止しました。");
+    if (POST_BASELINE_SYNC_TEST) {
+      record.safetyDiff = postBaselineSafetyDiff(record.before,record.after);
+      save();
+      if (Object.values(record.safetyDiff).some(x=>x.count)) throw new Error('同期後に想定外の実質差分を検出しました。再試行しません。');
+      return;
+    }
     const unexpected = Object.entries(record.diff).some(([table, diff]) => table !== "store_visits" ? diff.count > 0
       : diff.changes.some((change) => change.kind !== "added" || !record.preflight.addedVisits.some(([name, date]) =>
         record.before.stores.some((store) => store.id === change.store_id && store.name === name) && change.after.visited_on === date))
         || diff.count !== record.preflight.addedVisits.length);
     if (unexpected) throw new Error("想定外のDB差分を検出しました。追加同期・自動復旧はしません。");
   });
+}
+
+function checkPostBaselineSync(snapshot) {
+  const saved = readCloudMigrationRecord();
+  const migration = saved.baselineMigration;
+  if (saved.comparisonSchema !== 'v35-r2-c2' || migration?.substantiveDifferences !== 0
+    || migration?.pendingChanges !== 0 || migration?.localDataUnchanged !== true
+    || migration?.syncStillStopped !== true || !migration.before
+    || saved.cloudRevision !== migration.after?.cloudRevision
+    || saved.cloudComparable !== migration.after?.cloudComparable
+    || saved.cloudCheckedAt !== migration.after?.cloudCheckedAt) throw Error('基準移行の完了記録が一致しません。');
+  if (hasPendingCloudChanges() || cloudSyncQueued || cloudSyncTimer !== null) throw Error('未送信または予約処理があります。');
+  const args=[snapshot.stores,snapshot.bottles,snapshot.store_visits,snapshot.brand_labels];
+  if (Object.values(snapshot).some(rows=>rows.some(row=>row.user_id !== authSession?.user?.id))) throw Error('利用者が一致しません。');
+  if (createCloudRevision(...args)!==saved.cloudRevision || createCloudComparable(...args)!==saved.cloudComparable
+    || createLocalComparable()!==saved.cloudComparable) throw Error('最新クラウド・端末・比較基準に実質差分があります。');
+  const preflight=singleSyncPreflight(snapshot);
+  if (!preflight.safe || preflight.addedVisits.length || preflight.missingVisits.length) throw Error('書込み予定に想定外の差分があります。');
+  return {substantiveDifferences:0,pendingChanges:0,checkedAt:new Date().toISOString()};
+}
+
+function postBaselineSafetyDiff(before,after) {
+  const clean = snapshot => Object.fromEntries(Object.entries(snapshot).map(([table,rows])=>[table,rows.map(row=>{
+    const copy={...row};
+    if(table==='bottles') for(const key of ['last_visited_at','last_updated_at','updated_at']) delete copy[key];
+    return copy;
+  })]));
+  return singleSyncDatabaseDiff(clean(before),clean(after));
 }
 
 function syncDiagnosticError(error) {
@@ -272,7 +326,7 @@ async function migrateComparisonBaselineV35() {
 function createStoppedSyncDiagnostic() {
   const record = singleSyncTest.read();
   const report = {
-type: "shochu-sync-diagnostics", version: "35.0-baseline-1", capturedAt: new Date().toISOString(),
+type: "shochu-sync-diagnostics", version: "35.0-sync-test-5", capturedAt: new Date().toISOString(),
     historicalStop: record?.syncDiagnostic || { status: "not_recorded", stage: null,
       message: "旧版では詳細未記録。過去の停止箇所・エラーは復元できません。" },
     testRecord: record,
@@ -320,7 +374,7 @@ function mountSingleSyncTest() {
   panel.className = "cloud-sync-card";
   panel.id = "single-sync-test-panel";
   const title = document.createElement("strong");
-title.textContent = "Ver.35 baseline 1｜基準更新専用・同期停止中";
+title.textContent = "Ver.35 sync-test 5｜基準移行後1回検証・自動同期停止中";
   const message = document.createElement("p");
   message.setAttribute("aria-live", "polite");
   const start = document.createElement("button");
@@ -348,8 +402,10 @@ title.textContent = "Ver.35 baseline 1｜基準更新専用・同期停止中";
   diagnosticStatus.setAttribute("aria-live", "polite");
   const refresh = () => {
     const record = singleSyncTest.read();
-    start.disabled = SINGLE_SYNC_DIAGNOSTIC_ONLY || record?.phase !== "ready";
-    rearm.hidden = SINGLE_SYNC_DIAGNOSTIC_ONLY || !singleSyncTest.canRearmCancelled();
+    start.disabled = SINGLE_SYNC_DIAGNOSTIC_ONLY || (POST_BASELINE_SYNC_TEST
+      ? record?.phase !== 'stopped' || Boolean(record.postBaselineAttempt) || readCloudMigrationRecord().comparisonSchema !== 'v35-r2-c2' : record?.phase !== "ready");
+    rearm.hidden = POST_BASELINE_SYNC_TEST || SINGLE_SYNC_DIAGNOSTIC_ONLY || !singleSyncTest.canRearmCancelled();
+    migrateBaseline.hidden = POST_BASELINE_SYNC_TEST;
     message.textContent = `同期検証専用：自動同期・クラウド読込・初回移行を停止中（${record?.phase || "blocked"}）。${record?.error || ""} この画面以外で操作しないでください。URLを戻しても停止は維持されます。`;
   };
   start.addEventListener("click", async () => {
@@ -358,7 +414,7 @@ title.textContent = "Ver.35 baseline 1｜基準更新専用・同期停止中";
     catch (error) { message.textContent = `検証停止：${error.message} 自動同期は停止したままです。`; }
   });
   rearm.addEventListener("click", async () => {
-    if (SINGLE_SYNC_DIAGNOSTIC_ONLY) return;
+    if (POST_BASELINE_SYNC_TEST || SINGLE_SYNC_DIAGNOSTIC_ONLY) return;
     rearm.disabled = true;
     try {
       const allowed = await singleSyncTest.rearmCancelled();
@@ -1946,7 +2002,8 @@ async function runCloudSync(permit, reportDiagnostic = () => {}) {
     setCloudSyncState("checking", "クラウドに新しい変更がないか確認しています…");
     try {
       trace("inspect_cloud_updates", "started");
-      const inspection = await inspectCloudUpdates();
+      // The dedicated check below reads without acknowledging/changing the baseline.
+      const inspection = POST_BASELINE_SYNC_TEST && singleSyncTest.active() ? {safeToSync:true} : await inspectCloudUpdates();
       if (!inspection.safeToSync) {
         trace("inspect_cloud_updates", "blocked", { autoApply: Boolean(inspection.autoApply), mode: cloudUpdateMode });
         if (inspection.autoApply && !singleSyncTest.active()) {
@@ -1964,6 +2021,13 @@ async function runCloudSync(permit, reportDiagnostic = () => {}) {
       if (singleSyncTest.active() && (authSession?.user?.id !== singleSyncExpectedState?.userId
         || createLocalComparable() !== singleSyncExpectedState?.comparable
         || hasPendingCloudChanges())) throw new Error("検証開始後に端末の状態が変わったため停止しました。");
+      if (POST_BASELINE_SYNC_TEST && singleSyncTest.active()) {
+        if (localStorage.getItem(cloudMigrationStorageKey()) !== singleSyncExpectedState.baseline) throw Error('確認中に比較基準が変化しました。');
+        const latest=await readSingleSyncDatabase(authSession.user.id);
+        checkPostBaselineSync(latest);
+        if (authSession?.user?.id !== singleSyncExpectedState.userId || createLocalComparable() !== singleSyncExpectedState.comparable
+          || localStorage.getItem(cloudMigrationStorageKey()) !== singleSyncExpectedState.baseline || hasPendingCloudChanges()) throw Error('保存直前に端末状態が変化しました。');
+      }
       setCloudSyncState("syncing", "端末内の変更をクラウドへ保存しています…");
       trace("sync_cloud_snapshot", "started");
       await syncCloudSnapshot();
