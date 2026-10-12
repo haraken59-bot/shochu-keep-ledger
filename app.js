@@ -15,445 +15,6 @@ const REMAINING_UNDO_NOTE = "直前の残量変更を取り消し";
 const DAY = 24 * 60 * 60 * 1000;
 const PUBLIC_APP_URL = "https://haraken59-bot.github.io/shochu-keep-ledger/";
 
-// Temporary release only. Remove only after the one-shot audit and explicit approval.
-// Initialise before loading local data, registering events, or creating the Auth client.
-const SINGLE_SYNC_TEST_RELEASE = true;
-const SINGLE_SYNC_DIAGNOSTIC_ONLY = false;
-const POST_BASELINE_SYNC_TEST = true;
-const singleSyncTest = createSingleSyncTest(localStorage, navigator.locks,
-  SINGLE_SYNC_TEST_RELEASE || new URLSearchParams(window.location.search).get("syncTest") === "once");
-const singleSyncPermit = Symbol("single-sync-test");
-let singleSyncPermissionAvailable = false;
-let singleSyncExpectedState = null;
-
-function createSingleSyncTest(storage, locks, requested) {
-  const key = "shochu-keep-ledger-single-sync-test-v1";
-  let latched = requested;
-  let unavailable = false;
-  const read = () => {
-    try {
-      const raw = storage.getItem(key);
-      if (raw) latched = true;
-      return raw ? JSON.parse(raw) : (latched ? { phase: "blocked" } : null);
-    } catch { unavailable = true; return { phase: "blocked" }; }
-  };
-  const save = (record) => {
-    if (unavailable) throw new Error("検証記録を保存できないため停止しました。");
-    const value = JSON.stringify(record);
-    storage.setItem(key, value);
-    if (storage.getItem(key) !== value) throw new Error("検証記録の保存確認に失敗しました。");
-  };
-  // Only initialise absent state. Reopening the test URL must never reset a used permit.
-  try {
-    if (requested && storage.getItem(key) === null) save({ phase: "ready", createdAt: new Date().toISOString() });
-  } catch { unavailable = true; }
-  read();
-  const canRearmCancelled = () => {
-    const record = read();
-    const preflight = record?.preflight;
-    // One specifically reviewed cancellation, not a general reset/retry facility.
-    return !unavailable && record?.phase === "stopped" && !record.cancelRearmUsed
-      && record.startedAt === "2026-10-11T04:17:09.151Z"
-      && record.finishedAt === "2026-10-11T04:17:26.283Z"
-      && record.error === "実行を取り消しました。自動同期は停止したままです。"
-      && Boolean(record.userId && record.before) && preflight?.safe === true && preflight.pending === 0
-      && ["changedSections", "sectionDifferences", "rawBottleDifferences", "addedVisits", "missingVisits"]
-        .every((field) => Array.isArray(preflight[field]) && preflight[field].length === 0)
-      && ["result", "after", "diff", "syncStartedAt", "previousAttempt"].every((field) => !Object.hasOwn(record, field));
-  };
-  return {
-    active: () => { read(); return latched || unavailable; },
-    read,
-    canRearmCancelled,
-    runAfterBaseline: async (task) => {
-      if (unavailable || !locks?.request) throw new Error('安全な1回制限を利用できません。');
-      return locks.request(key, {ifAvailable:true}, async lock => {
-        const previous = read();
-        if (!lock || previous?.phase !== 'stopped' || previous.postBaselineAttempt) return;
-        const record = {phase:'running', postBaselineAttempt:true, startedAt:new Date().toISOString(), previousAttempt:previous};
-        save(record); // Failed preflight/cancel/crash also consumes this single attempt.
-        try { await task(record,()=>save(record)); record.phase='completed'; }
-        catch(error) { record.phase='stopped';record.error=error.message; }
-        finally { record.finishedAt=new Date().toISOString();save(record); }
-        return record;
-      });
-    },
-    rearmCancelled: async () => {
-      if (unavailable || !locks?.request) throw new Error("安全に再許可できないため停止しています。");
-      return locks.request(key, { ifAvailable: true }, async (lock) => {
-        if (!lock || !canRearmCancelled()) return false;
-        const previousAttempt = read();
-        save({ phase: "ready", createdAt: previousAttempt.createdAt, cancelRearmUsed: true,
-          rearmedAt: new Date().toISOString(), previousAttempt });
-        return true; // Only re-arm. Never start a network operation here.
-      });
-    },
-    run: async (task) => {
-      if (unavailable || !locks?.request) throw new Error("1回制限の保存または画面間の排他制御が利用できないため停止しました。");
-      return locks.request(key, { ifAvailable: true }, async (lock) => {
-        if (!lock || read()?.phase !== "ready") return;
-        const record = { ...read(), phase: "running", startedAt: new Date().toISOString() };
-        save(record); // Consume BEFORE the first network call; failures/crashes do not replenish it.
-        try {
-          await task(record, () => save(record));
-          record.phase = "completed";
-        } catch (error) {
-          record.phase = "stopped";
-          record.error = error.message;
-        } finally {
-          record.finishedAt = new Date().toISOString();
-          save(record);
-        }
-        return record;
-      });
-    },
-  };
-}
-
-async function readSingleSyncDatabase(userId) {
-  const snapshot = {};
-  for (const table of ["stores", "bottles", "store_visits", "remaining_updates", "brand_labels"]) {
-    snapshot[table] = [];
-    for (let offset = 0; ; offset += 500) {
-      const rows = await supabaseData(supabaseClient.from(table).select("*")
-        .eq("user_id", userId).order("id").range(offset, offset + 499));
-      snapshot[table].push(...rows);
-      if (rows.length < 500) break;
-    }
-  }
-  return snapshot;
-}
-
-function singleSyncDatabaseDiff(before, after) {
-  return Object.fromEntries(Object.keys(before).map((table) => {
-    const previous = new Map(before[table].map((row) => [row.id, row]));
-    const current = new Map(after[table].map((row) => [row.id, row]));
-    const changes = [...new Set([...previous.keys(), ...current.keys()])].flatMap((id) => {
-      const left = previous.get(id), right = current.get(id);
-      const fields = [...new Set([...Object.keys(left || {}), ...Object.keys(right || {})])]
-        .filter((field) => JSON.stringify(left?.[field]) !== JSON.stringify(right?.[field]));
-      return fields.length ? [{ id, kind: !left ? "added" : !right ? "deleted" : "updated",
-        store_id: right?.store_id || left?.store_id || (table === "stores" ? id : null),
-        fields, before: left || null, after: right || null }] : [];
-    });
-    return [table, { count: changes.length, changes }];
-  }));
-}
-
-function singleSyncPreflight(before) {
-  const local = JSON.parse(createLocalComparable());
-  const cloud = JSON.parse(createCloudComparable(before.stores, before.bottles, before.store_visits, before.brand_labels));
-  const changedSections = ["stores", "bottles", "labels"].filter((section) => JSON.stringify(local[section]) !== JSON.stringify(cloud[section]));
-  const oldVisits = new Set(cloud.visits.map((row) => JSON.stringify(row)));
-  const newVisits = new Set(local.visits.map((row) => JSON.stringify(row)));
-  const addedVisits = [...newVisits].filter((row) => !oldVisits.has(row)).map(JSON.parse);
-  const missingVisits = [...oldVisits].filter((row) => !newVisits.has(row)).map(JSON.parse);
-  const pending = Object.keys(loadPendingRemainingChanges()).length
-    + Object.keys(loadPendingVisitDeletes()).length + Object.keys(loadPendingLabels()).length;
-  const sectionDifferences = changedSections.map((section) => ({ section,
-    before: cloud[section], proposed: local[section] }));
-  // The UI comparison normalises missing/zero volume to 900. Do not let that hide a DB write.
-  const rawBottleDifferences = local.bottles.flatMap(([id, store, brand, volume, remaining, kept, status, notes]) => {
-    const row = before.bottles.find((bottle) => String(bottle.legacy_id) === id);
-    const expected = { store_id: before.stores.find((entry) => entry.name === store)?.id,
-      brand, volume_ml: volume, current_remaining: remaining, kept_at: kept, status, notes };
-    const fields = Object.keys(expected).filter((field) => {
-      const value = row?.[field];
-      return ["volume_ml", "current_remaining"].includes(field) ? Number(value) !== expected[field]
-        : (field === "notes" ? value || "" : value) !== expected[field];
-    });
-    return fields.length ? [{ id: row?.id || null, legacy_id: id, store, fields }] : [];
-  });
-  return { changedSections, sectionDifferences, rawBottleDifferences, addedVisits, missingVisits, pending,
-    safe: changedSections.length === 0 && rawBottleDifferences.length === 0 && pending === 0
-      && addedVisits.length <= 1 && missingVisits.length === 0 };
-}
-
-async function executeSingleSyncTest() {
-  if (SINGLE_SYNC_DIAGNOSTIC_ONLY) return;
-  const run = POST_BASELINE_SYNC_TEST ? singleSyncTest.runAfterBaseline : singleSyncTest.run;
-  return run(async (record, save) => {
-    if (!authSession?.user || !isCloudSyncEnabled() || navigator.onLine === false || cloudSyncPromise) {
-      throw new Error("ログイン・同期設定・オンライン状態を確認してください。再試行は停止中です。");
-    }
-    record.userId = authSession.user.id;
-    if (POST_BASELINE_SYNC_TEST && record.previousAttempt?.userId !== record.userId) throw Error('前回記録とログイン利用者が一致しません。');
-    record.before = await readSingleSyncDatabase(record.userId);
-    record.preflight = singleSyncPreflight(record.before);
-    if (POST_BASELINE_SYNC_TEST) {
-      record.baselineCheck = checkPostBaselineSync(record.before);
-    }
-    save();
-    if (!record.preflight.safe) throw new Error("同期前の差分が安全条件を超えたため、書き込まず停止しました。検証記録を確認してください。");
-    const unchanged = createLocalComparable();
-    singleSyncExpectedState = { userId: record.userId, comparable: unchanged };
-    if (POST_BASELINE_SYNC_TEST) singleSyncExpectedState.baseline = localStorage.getItem(cloudMigrationStorageKey());
-    if (!window.confirm(`同期はこの1回だけです。来店日追加予定：${record.preflight.addedVisits.length}件。ボトル変更：0件。実行しますか？`)) {
-      throw new Error("実行を取り消しました。自動同期は停止したままです。");
-    }
-    singleSyncPermissionAvailable = true;
-    record.syncStartedAt = new Date().toISOString();
-    save();
-    record.result = await runCloudSync(singleSyncPermit, (entry) => {
-      record.syncDiagnostic = { ...entry, recordedAt: new Date().toISOString() };
-      save();
-    });
-    // Reads only, including after a failed/partially completed cycle. Never retry writes.
-    record.after = await readSingleSyncDatabase(record.userId);
-    record.diff = singleSyncDatabaseDiff(record.before, record.after);
-    save();
-    if (record.result !== "synced") throw new Error("同期が完了しなかったため停止しました。競合を自動採用・復旧していません。");
-    if (unchanged !== createLocalComparable()) throw new Error("試験中に端末データが変化したため停止しました。");
-    if (POST_BASELINE_SYNC_TEST) {
-      record.safetyDiff = postBaselineSafetyDiff(record.before,record.after);
-      save();
-      if (Object.values(record.safetyDiff).some(x=>x.count)) throw new Error('同期後に想定外の実質差分を検出しました。再試行しません。');
-      return;
-    }
-    const unexpected = Object.entries(record.diff).some(([table, diff]) => table !== "store_visits" ? diff.count > 0
-      : diff.changes.some((change) => change.kind !== "added" || !record.preflight.addedVisits.some(([name, date]) =>
-        record.before.stores.some((store) => store.id === change.store_id && store.name === name) && change.after.visited_on === date))
-        || diff.count !== record.preflight.addedVisits.length);
-    if (unexpected) throw new Error("想定外のDB差分を検出しました。追加同期・自動復旧はしません。");
-  });
-}
-
-function checkPostBaselineSync(snapshot) {
-  const saved = readCloudMigrationRecord();
-  const migration = saved.baselineMigration;
-  if (saved.comparisonSchema !== 'v35-r2-c2' || migration?.substantiveDifferences !== 0
-    || migration?.pendingChanges !== 0 || migration?.localDataUnchanged !== true
-    || migration?.syncStillStopped !== true || !migration.before
-    || saved.cloudRevision !== migration.after?.cloudRevision
-    || saved.cloudComparable !== migration.after?.cloudComparable
-    || saved.cloudCheckedAt !== migration.after?.cloudCheckedAt) throw Error('基準移行の完了記録が一致しません。');
-  if (hasPendingCloudChanges() || cloudSyncQueued || cloudSyncTimer !== null) throw Error('未送信または予約処理があります。');
-  const args=[snapshot.stores,snapshot.bottles,snapshot.store_visits,snapshot.brand_labels];
-  if (Object.values(snapshot).some(rows=>rows.some(row=>row.user_id !== authSession?.user?.id))) throw Error('利用者が一致しません。');
-  if (createCloudRevision(...args)!==saved.cloudRevision || createCloudComparable(...args)!==saved.cloudComparable
-    || createLocalComparable()!==saved.cloudComparable) throw Error('最新クラウド・端末・比較基準に実質差分があります。');
-  const preflight=singleSyncPreflight(snapshot);
-  if (!preflight.safe || preflight.addedVisits.length || preflight.missingVisits.length) throw Error('書込み予定に想定外の差分があります。');
-  return {substantiveDifferences:0,pendingChanges:0,checkedAt:new Date().toISOString()};
-}
-
-function postBaselineSafetyDiff(before,after) {
-  const clean = snapshot => Object.fromEntries(Object.entries(snapshot).map(([table,rows])=>[table,rows.map(row=>{
-    const copy={...row};
-    if(table==='bottles') for(const key of ['last_visited_at','last_updated_at','updated_at']) delete copy[key];
-    return copy;
-  })]));
-  return singleSyncDatabaseDiff(clean(before),clean(after));
-}
-
-function syncDiagnosticError(error) {
-  const redact = (value) => String(value || "")
-    .replace(/Bearer\s+\S+/gi, "Bearer [redacted]")
-    .replace(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "[redacted JWT]")
-    .replace(/sb_(?:secret|publishable)_[A-Za-z0-9_-]+/g, "[redacted key]")
-    .replace(/https?:\/\/[^\s]+/g, "[URL omitted]").slice(0, 800);
-  return { name: redact(error?.name), code: redact(error?.code), message: redact(error?.message) };
-}
-
-// Explicit baseline-only migration. No sync, restore, RPC, or database write.
-function convertLegacyBaselineV35(record) {
-  const revision = JSON.parse(record.cloudRevision);
-  const comparable = JSON.parse(record.cloudComparable);
-  const check = (value, lengths) => {
-    if (!value || Object.keys(value).sort().join() !== 'bottles,labels,stores,visits') throw Error('未知の比較基準形式です。');
-    for (const [section, length] of Object.entries(lengths)) {
-      if (!Array.isArray(value[section]) || !value[section].every(row => Array.isArray(row) && row.length === length)) throw Error('比較基準の列数が不明です。');
-    }
-    if (new Set(value.bottles.map(row => row[0])).size !== value.bottles.length) throw Error('ボトルIDが重複しています。');
-  };
-  check(revision, {stores:6,bottles:11,visits:3,labels:3});
-  check(comparable, {stores:5,bottles:9,visits:2});
-  if (!Array.isArray(comparable.labels) || !comparable.labels.every(x => typeof x === 'string')) throw Error('ラベル基準が不明です。');
-  revision.bottles = sortCanonicalRows(revision.bottles.map(row => row.filter((_, i) => i !== 7 && i !== 10)));
-  comparable.bottles = sortCanonicalRows(comparable.bottles.map(row => row.filter((_, i) => i !== 6)));
-  return {revision: JSON.stringify(revision), comparable: JSON.stringify(comparable)};
-}
-
-async function migrateComparisonBaselineV35() {
-  if (!navigator.locks?.request) throw Error('排他制御を利用できません。');
-  return navigator.locks.request('shochu-keep-ledger-single-sync-test-v1', {ifAvailable:true}, async lock => {
-    const userId = authSession?.user?.id;
-    const safe = () => lock && userId && authSession?.user?.id === userId && singleSyncTest.active()
-      && SINGLE_SYNC_DIAGNOSTIC_ONLY && navigator.onLine && isCloudSyncEnabled()
-      && singleSyncTest.read()?.userId === userId && singleSyncTest.read()?.phase === 'stopped'
-      && !cloudSyncPromise && !cloudSyncQueued && cloudSyncTimer === null && !hasPendingCloudChanges();
-    if (!safe()) throw Error('停止状態・本人認証・未送信0件を確認できません。');
-    const key = cloudMigrationStorageKey();
-    const original = localStorage.getItem(key);
-    const previous = JSON.parse(original);
-    const converted = convertLegacyBaselineV35(previous);
-    const local = createLocalComparable();
-    const dataKeys = [STORAGE_KEY,LABELS_KEY,STORE_LOCATIONS_KEY,STORE_SETTINGS_KEY,STORE_VISITS_KEY,REMAINING_HISTORY_KEY];
-    const dataBefore = dataKeys.map(k => localStorage.getItem(k));
-    const unchanged = () => safe() && localStorage.getItem(key) === original && createLocalComparable() === local
-      && dataKeys.every((k,i) => localStorage.getItem(k) === dataBefore[i]);
-    const compare = snapshot => {
-      if (Object.values(snapshot).some(rows => rows.some(row => row.user_id !== userId))) throw Error('本人以外の行を検出しました。');
-      const args = [snapshot.stores,snapshot.bottles,snapshot.store_visits,snapshot.brand_labels];
-      const revision = createCloudRevision(...args), comparable = createCloudComparable(...args);
-      if (revision !== converted.revision || comparable !== converted.comparable || comparable !== local) throw Error('実質差分があるため保存しません。');
-    };
-    const first = await readSingleSyncDatabase(userId);
-    compare(first);
-    if (!unchanged()) throw Error('照合中に端末の状態が変化しました。');
-    // A second read immediately before the local commit. This is not a DB transaction.
-    const latest = await readSingleSyncDatabase(userId);
-    compare(latest);
-    if (Object.values(singleSyncDatabaseDiff(first,latest)).some(x => x.count)) throw Error('再確認中にクラウドが変化しました。');
-    if (!unchanged()) throw Error('保存直前の確認に失敗しました。');
-    const checkedAt = new Date().toISOString();
-    const result = {type:'shochu-baseline-migration',savedAt:checkedAt,
-      before:{cloudRevision:previous.cloudRevision,cloudComparable:previous.cloudComparable,cloudCheckedAt:previous.cloudCheckedAt ?? null},
-      after:{cloudRevision:converted.revision,cloudComparable:converted.comparable,cloudCheckedAt:checkedAt},
-      substantiveDifferences:0,pendingChanges:0,localDataUnchanged:true,syncStillStopped:true,
-      note:'クラウドは保存直前に2回SELECT。保存後のDB状態を原子的に保証するものではありません。'};
-    // One atomic localStorage replacement; original baseline retained inside this record.
-    const next = JSON.stringify({...previous,...result.after,comparisonSchema:'v35-r2-c2',baselineMigration:result});
-    localStorage.setItem(key,next);
-    if (localStorage.getItem(key) !== next) throw Error('基準保存の確認に失敗しました。再実行せず停止してください。');
-    observedCloudRevision = converted.revision;
-    observedCloudComparable = converted.comparable;
-    return result;
-  });
-}
-
-// Local reads only. Never query Supabase, acknowledge a revision, reset a latch, or retry.
-function createStoppedSyncDiagnostic() {
-  const record = singleSyncTest.read();
-  const report = {
-type: "shochu-sync-diagnostics", version: "35.0-sync-test-5.1", capturedAt: new Date().toISOString(),
-    historicalStop: record?.syncDiagnostic || { status: "not_recorded", stage: null,
-      message: "旧版では詳細未記録。過去の停止箇所・エラーは復元できません。" },
-    testRecord: record,
-    currentState: {
-      note: "以下は現在状態です。過去の停止時点とは異なり、停止原因の確定情報ではありません。",
-      guardActive: singleSyncTest.active(), diagnosticOnly: SINGLE_SYNC_DIAGNOSTIC_ONLY,
-      authenticated: Boolean(authSession?.user), sameUserAsTest: Boolean(authSession?.user && authSession.user.id === record?.userId),
-      online: navigator.onLine, migrationCompleted: isCloudSyncEnabled(),
-      syncState: cloudSyncState, syncInFlight: Boolean(cloudSyncPromise), syncQueued: cloudSyncQueued,
-      syncTimerScheduled: cloudSyncTimer !== null, cloudUpdateAvailable, cloudUpdateMode,
-      baselineRevisionPresent: Boolean(observedCloudRevision), baselineComparablePresent: Boolean(observedCloudComparable),
-    },
-  };
-  try {
-    const current = report.currentState;
-    // Allowlist only: never export the migration record or Auth storage wholesale.
-    const baseline = authSession?.user?.id ? readCloudMigrationRecord() : {};
-    report.savedBaseline = {
-      source: "localStorage/cloud-migration-v1 (current authenticated user)",
-      cloudRevision: typeof baseline.cloudRevision === "string" ? baseline.cloudRevision : null,
-      cloudComparable: typeof baseline.cloudComparable === "string" ? baseline.cloudComparable : null,
-      cloudCheckedAt: typeof baseline.cloudCheckedAt === "string" ? baseline.cloudCheckedAt : null,
-    };
-    report.currentCloud = { status: "not_fetched", note: "DB通信なし。testRecord.afterは過去の記録であり現在クラウドではありません。" };
-    current.pendingRemaining = Object.keys(loadPendingRemainingChanges()).length;
-    current.pendingVisitDeletes = Object.keys(loadPendingVisitDeletes()).length;
-    current.pendingLabels = Object.keys(loadPendingLabels()).length;
-    const local = createLocalComparable();
-    report.localComparableAtCapture = local;
-    current.baselineComparableMatchesLocal = observedCloudComparable ? observedCloudComparable === local : null;
-    const snapshot = record?.after;
-    if (current.sameUserAsTest && snapshot) {
-      const args = [snapshot.stores, snapshot.bottles, snapshot.store_visits, snapshot.brand_labels];
-      current.baselineRevisionMatchesRecordedAfter = observedCloudRevision ? observedCloudRevision === createCloudRevision(...args) : null;
-      current.recordedAfterMatchesLocal = createCloudComparable(...args) === local;
-      current.recordedAfterComparedAt = record.finishedAt || null;
-    }
-  } catch (error) { report.collectionError = syncDiagnosticError(error); }
-  return report;
-}
-
-function mountSingleSyncTest() {
-  if (!singleSyncTest.active()) return;
-  const panel = document.createElement("section");
-  panel.className = "cloud-sync-card";
-  panel.id = "single-sync-test-panel";
-  const title = document.createElement("strong");
-title.textContent = "Ver.35 sync-test 5.1｜ログイン復元表示修正・自動同期停止中";
-  const message = document.createElement("p");
-  message.setAttribute("aria-live", "polite");
-  const start = document.createElement("button");
-  start.textContent = "検証：同期を1回だけ実行";
-  const download = document.createElement("button");
-  download.textContent = "検証記録を保存";
-  const rearm = document.createElement("button");
-  rearm.textContent = "キャンセル分を1回だけ再許可";
-  const diagnose = document.createElement("button");
-  diagnose.textContent = "停止情報を保存（同期しません）";
-  const migrateBaseline = document.createElement('button');
-  migrateBaseline.textContent = '最新照合して比較基準だけ更新（同期しません）';
-  migrateBaseline.addEventListener('click', async () => {
-    if (!window.confirm('最新クラウドを読み取り、実質差分0・未送信0の場合だけ端末の比較基準を更新します。同期・復旧はしません。')) return;
-    migrateBaseline.disabled = true;
-    try {
-      const result = await migrateComparisonBaselineV35();
-      const url = URL.createObjectURL(new Blob([JSON.stringify(result,null,2)],{type:'application/json'}));
-      const link = document.createElement('a'); link.href=url; link.download='shochu-baseline-migration.json'; link.click();
-      window.setTimeout(()=>URL.revokeObjectURL(url),1000);
-      diagnosticStatus.textContent='比較基準だけ保存しました。同期停止中です。保存結果JSONを送ってください。';
-    } catch (error) { diagnosticStatus.textContent=`基準更新を停止しました：${error.message} 同期は停止中です。`; }
-  });
-  const diagnosticStatus = document.createElement("p");
-  diagnosticStatus.setAttribute("aria-live", "polite");
-  const refresh = () => {
-    const record = singleSyncTest.read();
-    start.disabled = SINGLE_SYNC_DIAGNOSTIC_ONLY || (POST_BASELINE_SYNC_TEST
-      ? !authSession?.user || record?.userId !== authSession.user.id || !singleSyncTest.active()
-        || record?.phase !== 'stopped' || Boolean(record.postBaselineAttempt)
-        || readCloudMigrationRecord().comparisonSchema !== 'v35-r2-c2' : record?.phase !== "ready");
-    rearm.hidden = POST_BASELINE_SYNC_TEST || SINGLE_SYNC_DIAGNOSTIC_ONLY || !singleSyncTest.canRearmCancelled();
-    migrateBaseline.hidden = POST_BASELINE_SYNC_TEST;
-    message.textContent = `同期検証専用：自動同期・クラウド読込・初回移行を停止中（${record?.phase || "blocked"}）。${record?.error || ""} この画面以外で操作しないでください。URLを戻しても停止は維持されます。`;
-  };
-  start.addEventListener("click", async () => {
-    start.disabled = true;
-    try { await executeSingleSyncTest(); refresh(); }
-    catch (error) { message.textContent = `検証停止：${error.message} 自動同期は停止したままです。`; }
-  });
-  rearm.addEventListener("click", async () => {
-    if (POST_BASELINE_SYNC_TEST || SINGLE_SYNC_DIAGNOSTIC_ONLY) return;
-    rearm.disabled = true;
-    try {
-      const allowed = await singleSyncTest.rearmCancelled();
-      refresh();
-      if (allowed) message.textContent = "再試験を1回だけ許可しました（ready）。同期はまだ実行していません。自動同期は停止中です。";
-    } catch (error) { message.textContent = `再許可を停止しました：${error.message}`; }
-  });
-  diagnose.addEventListener("click", () => {
-    const report = createStoppedSyncDiagnostic();
-    const url = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2)], { type: "application/json" }));
-    const link = document.createElement("a");
-    link.href = url; link.download = "shochu-sync-diagnostics.json"; link.click();
-    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-    diagnosticStatus.textContent = report.historicalStop.status === "not_recorded"
-      ? "過去の詳細は未記録です。保存済み検証記録と現在状態を出力しました。同期・DB通信はしていません。"
-      : `記録された停止段階：${report.historicalStop.stage}／${report.historicalStop.status}。同期・DB通信はしていません。`;
-  });
-  download.addEventListener("click", () => {
-    const url = URL.createObjectURL(new Blob([JSON.stringify(singleSyncTest.read(), null, 2)], { type: "application/json" }));
-    const link = document.createElement("a");
-    link.href = url; link.download = "shochu-single-sync-test.json"; link.click();
-    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-  });
-  panel.append(title, message, rearm, start, download, diagnose, migrateBaseline, diagnosticStatus);
-  els.cloudUpdateBanner.before(panel);
-  // No edits/logout while a test cycle is awaiting network responses, in any updated tab.
-  for (const type of ["click", "input", "change", "submit", "keydown"]) {
-    document.addEventListener(type, (event) => {
-      if (singleSyncTest.read()?.phase === "running" && !panel.contains(event.target)) {
-        event.preventDefault(); event.stopImmediatePropagation();
-      }
-    }, true);
-  }
-  window.addEventListener("storage", refresh);
-  window.addEventListener("shochu-auth-state-rendered", refresh);
-  refresh();
-}
 
 const demoBottles = [
   { id: "demo-1", store: "やきとり日高", name: "黒霧島", volume: 900, remaining: 70, startedAt: "2026-07-05", lastVisitedAt: "2026-07-24", notes: "水代 220円" },
@@ -729,7 +290,6 @@ function renderAuthState(session = null) {
   renderCloudUpdateBanner();
   renderCloudMigrationState();
   renderCloudSyncState();
-  window.dispatchEvent(new Event("shochu-auth-state-rendered"));
 }
 
 async function initializeSupabaseAuth() {
@@ -1334,7 +894,6 @@ function hasPendingCloudChanges() {
 }
 
 async function restoreFromSupabase(options = {}) {
-  if (singleSyncTest.active()) return;
   const {
     snapshot: providedSnapshot = null,
     requireConfirmation = true,
@@ -1677,7 +1236,6 @@ function queueLabelSync(brand) {
 }
 
 function scheduleCloudSync(delay = 700) {
-  if (singleSyncTest.active()) return;
   if (cloudSyncPaused || cloudUpdateAvailable || !isCloudSyncEnabled()) return;
   if (navigator.onLine === false) {
     setCloudSyncState("pending", "通信できるようになったら自動で再試行します。端末内のデータは保存済みです。");
@@ -1976,28 +1534,14 @@ async function syncCloudSnapshot() {
   await syncPendingCloudLabels(userId);
 }
 
-async function runCloudSync(permit, reportDiagnostic = () => {}) {
-  if (SINGLE_SYNC_DIAGNOSTIC_ONLY) return null;
-  let diagnosticStage = "entry";
-  const trace = (stage, status, extra = {}) => {
-    diagnosticStage = stage;
-    reportDiagnostic({ stage, status, ...extra });
-  };
-  if (singleSyncTest.active()) {
-    if (permit !== singleSyncPermit || !singleSyncPermissionAvailable || singleSyncTest.read()?.phase !== "running") {
-      trace("permission", "blocked"); return null;
-    }
-    singleSyncPermissionAvailable = false;
-  }
+async function runCloudSync() {
   if (cloudSyncPromise) {
-    trace("existing_sync", "queued");
     cloudSyncQueued = true;
     return cloudSyncPromise;
   }
-  if (cloudUpdateAvailable) { trace("known_cloud_update", "blocked"); return null; }
-  if (!isCloudSyncEnabled()) { trace("sync_not_enabled", "blocked"); return null; }
+  if (cloudUpdateAvailable) return null;
+  if (!isCloudSyncEnabled()) return null;
   if (navigator.onLine === false) {
-    trace("offline", "blocked");
     setCloudSyncState("pending", "通信できるようになったら自動で再試行します。端末内のデータは保存済みです。");
     return null;
   }
@@ -2005,12 +1549,9 @@ async function runCloudSync(permit, reportDiagnostic = () => {}) {
   cloudSyncPromise = (async () => {
     setCloudSyncState("checking", "クラウドに新しい変更がないか確認しています…");
     try {
-      trace("inspect_cloud_updates", "started");
-      // The dedicated check below reads without acknowledging/changing the baseline.
-      const inspection = POST_BASELINE_SYNC_TEST && singleSyncTest.active() ? {safeToSync:true} : await inspectCloudUpdates();
+      const inspection = await inspectCloudUpdates();
       if (!inspection.safeToSync) {
-        trace("inspect_cloud_updates", "blocked", { autoApply: Boolean(inspection.autoApply), mode: cloudUpdateMode });
-        if (inspection.autoApply && !singleSyncTest.active()) {
+        if (inspection.autoApply) {
           await restoreFromSupabase({
             snapshot: inspection.snapshot,
             requireConfirmation: false,
@@ -2021,25 +1562,11 @@ async function runCloudSync(permit, reportDiagnostic = () => {}) {
         }
         return;
       }
-      trace("local_safety_check", "started");
-      if (singleSyncTest.active() && (authSession?.user?.id !== singleSyncExpectedState?.userId
-        || createLocalComparable() !== singleSyncExpectedState?.comparable
-        || hasPendingCloudChanges())) throw new Error("検証開始後に端末の状態が変わったため停止しました。");
-      if (POST_BASELINE_SYNC_TEST && singleSyncTest.active()) {
-        if (localStorage.getItem(cloudMigrationStorageKey()) !== singleSyncExpectedState.baseline) throw Error('確認中に比較基準が変化しました。');
-        const latest=await readSingleSyncDatabase(authSession.user.id);
-        checkPostBaselineSync(latest);
-        if (authSession?.user?.id !== singleSyncExpectedState.userId || createLocalComparable() !== singleSyncExpectedState.comparable
-          || localStorage.getItem(cloudMigrationStorageKey()) !== singleSyncExpectedState.baseline || hasPendingCloudChanges()) throw Error('保存直前に端末状態が変化しました。');
-      }
       setCloudSyncState("syncing", "端末内の変更をクラウドへ保存しています…");
-      trace("sync_cloud_snapshot", "started");
       await syncCloudSnapshot();
-      trace("fetch_after_sync", "started");
       const syncedSnapshot = await fetchCloudRestoreSnapshot();
       replaceRemainingHistoryFromCloud(syncedSnapshot.remainingHistory);
       if (syncedSnapshot.comparable !== createLocalComparable()) {
-        trace("compare_after_sync", "blocked");
         const messages = describeCloudChanges(syncedSnapshot);
         const localUnchanged = Boolean(
           observedCloudComparable
@@ -2049,15 +1576,12 @@ async function runCloudSync(permit, reportDiagnostic = () => {}) {
         setCloudUpdateAvailability(true, syncedSnapshot, localUnchanged ? "available" : "conflict", messages);
         return;
       }
-      trace("remember_revision", "started");
       rememberCloudRevision(syncedSnapshot);
       setCloudUpdateAvailability(false);
       const time = new Intl.DateTimeFormat("ja-JP", { hour: "2-digit", minute: "2-digit" }).format(new Date());
       setCloudSyncState("idle", `${time}にクラウド保存を確認しました。`);
-      trace("complete", "synced");
       return "synced";
     } catch (error) {
-      trace(diagnosticStage, "error", { error: syncDiagnosticError(error) });
       console.error("Cloud sync failed", error);
       setCloudSyncState("pending", "クラウドへ保存できませんでした。端末内には保存済みで、通信回復後に再試行します。");
     } finally {
@@ -2073,7 +1597,6 @@ async function runCloudSync(permit, reportDiagnostic = () => {}) {
 }
 
 async function migrateLocalDataToSupabase() {
-  if (singleSyncTest.active()) return;
   if (!supabaseClient || !authSession?.user) {
     setCloudMigrationStatus("先にクラウドへログインしてください。", true);
     return;
@@ -4735,7 +4258,6 @@ els.ocrDialog.addEventListener("cancel", (event) => {
 });
 
 render();
-mountSingleSyncTest();
 initializeSupabaseAuth();
 tryAutomaticNearbyStores();
 window.addEventListener("online", () => scheduleCloudSync(0));
