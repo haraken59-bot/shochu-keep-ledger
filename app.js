@@ -14,6 +14,8 @@ const REMAINING_HISTORY_DISPLAY_LIMIT = 10;
 const REMAINING_UNDO_NOTE = "直前の残量変更を取り消し";
 const DAY = 24 * 60 * 60 * 1000;
 const PUBLIC_APP_URL = "https://haraken59-bot.github.io/shochu-keep-ledger/";
+// Stage 1: keep automatic sync disabled until the phone's normal-release update is confirmed.
+const AUTOMATIC_CLOUD_SYNC_ENABLED = false;
 
 
 const demoBottles = [
@@ -1236,6 +1238,7 @@ function queueLabelSync(brand) {
 }
 
 function scheduleCloudSync(delay = 700) {
+  if (!AUTOMATIC_CLOUD_SYNC_ENABLED) return;
   if (cloudSyncPaused || cloudUpdateAvailable || !isCloudSyncEnabled()) return;
   if (navigator.onLine === false) {
     setCloudSyncState("pending", "通信できるようになったら自動で再試行します。端末内のデータは保存済みです。");

@@ -5,6 +5,8 @@ function fn(text,name){let i=text.indexOf(`function ${name}(`);assert(i>=0,name)
 for(const n of ['createCloudRevision','createCloudComparable','createLocalComparable','syncCloudSnapshot','ensureCloudStores','syncCloudBottles','syncCloudVisits','syncPendingCloudLabels','inspectCloudUpdates'])assert.equal(fn(src,n),fn(released,n),n+' must be unchanged');
 assert(!/singleSyncTest|POST_BASELINE_SYNC_TEST|baselineMigration|mountSingleSyncTest/.test(src));
 const c=vm.createContext({console:{error(){}},Date,Intl,JSON,Map,Set});
+assert(src.includes('const AUTOMATIC_CLOUD_SYNC_ENABLED = false;'));
+c.AUTOMATIC_CLOUD_SYNC_ENABLED = false;
 for(const n of ['runCloudSync','scheduleCloudSync','sortCanonicalRows','cloudCoordinate','normalizeClosedWeekdays','createCloudRevision'])vm.runInContext(fn(src,n),c);
 let saves=0,restores=0,remember=0,scheduled;
 Object.assign(c,{cloudSyncPromise:null,cloudSyncQueued:false,cloudSyncTimer:null,cloudSyncPaused:false,cloudUpdateAvailable:false,
@@ -13,6 +15,12 @@ Object.assign(c,{cloudSyncPromise:null,cloudSyncQueued:false,cloudSyncTimer:null
  replaceRemainingHistoryFromCloud(){},createLocalComparable:()=> 'local',rememberCloudRevision:()=>remember++,setCloudUpdateAvailability(){},
  restoreFromSupabase:async()=>restores++,observedCloudComparable:'local',hasPendingCloudChanges:()=>false,describeCloudChanges:()=>[]});
 (async()=>{
+ // Stage 1: every automatic entry point uses this scheduler; no timer or sync is allowed.
+ c.scheduleCloudSync(0);c.scheduleCloudSync();assert.equal(scheduled,undefined);assert.equal(saves,0);assert.equal(remember,0);
+ assert(src.includes('window.addEventListener("online", () => scheduleCloudSync(0))'));
+ assert(src.includes('if (document.visibilityState === "visible") scheduleCloudSync(0)'));
+ // Verify the unchanged normal path with the release gate enabled only in this isolated VM.
+ c.AUTOMATIC_CLOUD_SYNC_ENABLED = true;
  assert.equal(await c.runCloudSync(),'synced');assert.equal(await c.runCloudSync(),'synced');assert.equal(saves,2);assert.equal(remember,2);
  c.scheduleCloudSync(0);assert(scheduled);await scheduled();await c.cloudSyncPromise;assert.equal(saves,3);
  c.navigator.onLine=false;await c.runCloudSync();assert.equal(saves,3);c.navigator.onLine=true;

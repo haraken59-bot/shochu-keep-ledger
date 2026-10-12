@@ -110,15 +110,21 @@ const server = http.createServer((req, res) => {
     assert.deepEqual(related.weekdays, [0,5]);
     await context.setOffline(true);
     await page.reload();
-    assert.equal(await page.locator('.app-version').innerText(), 'Ver.35');
+    assert.equal(await page.locator('.app-version').innerText(), 'Ver.35.1');
+    assert.equal(await page.evaluate(() => {
+      window.dispatchEvent(new Event('online'));
+      document.dispatchEvent(new Event('visibilitychange'));
+      scheduleCloudSync(0);
+      return AUTOMATIC_CLOUD_SYNC_ENABLED === false && cloudSyncTimer === null && cloudSyncPromise === null;
+    }), true);
     assert.equal(await page.locator('#single-sync-test-panel').count(), 0);
     assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('shochu-keep-ledger-single-sync-test-v1')).postBaselineAttempt),true);
     const cacheState = await page.evaluate(async()=>({
       names: await caches.keys(),
-      fresh: Boolean(await caches.match('./app.js?v=35.1')),
+      fresh: Boolean(await caches.match('./app.js?v=35.1-stage1')),
       old: Boolean(await caches.match('./app.js?v=35.0')),
     }));
-    assert.deepEqual(cacheState.names,['shochu-keep-ledger-v35-normal-35.1']);
+    assert.deepEqual(cacheState.names,['shochu-keep-ledger-v35-normal-35.1-stage1']);
     assert.equal(cacheState.fresh,true); assert.equal(cacheState.old,false);
     const offlineIcons = await page.evaluate(async assets => Promise.all(assets.map(async asset => (await fetch(asset)).status)), assets);
     assert.ok(offlineIcons.every(status => status === 200));
