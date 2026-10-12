@@ -2,7 +2,11 @@
 
 最終確認日：2026-10-12（日本時間）。このファイルは現在状態、過去履歴は `CHANGELOG.md` を参照する。
 
-## 最新作業：sync-test 5.1 ログイン復元表示修正（公開済み）
+## 最新作業：Ver.35.1 第1段階（自動同期停止・公開済み）
+
+- 第2段階候補（未公開）：利用者がスマホVer.35.1/通常画面/sync-testなし、同期・復元・移行未操作を確認。app.jsは第1段階db4528cから自動同期フラグfalse→trueとコメントだけ変更したことを全体比較テストで確認。表示Ver.35.1維持、JS35.1-stage2 / SW shochu-keep-ledger-v35-normal-35.1-stage2は旧停止版キャッシュと区別する配信識別。通常同期/競合/再試行・来店分離/送信・隔離Edge PWA回帰成功、JS例外/参照切れ0。実同期/DB操作/公開なし。認証済み実機の第2段階動作は未確認。公開中の第1段階は自動同期停止を維持。
+
+- 公開コミットdb4528cbdb1abb2c892a5cc3ec9a4b9049e645ac、main/リポジトリ直下。Pages run 38205702126 success。正式URL https://haraken59-bot.github.io/shochu-keep-ledger/ のHTML、app.js?v=35.1-stage1、service-worker.jsを直接GETし全てHTTP200・指定コミット内容一致。表示Ver.35.1、SW shochu-keep-ledger-v35-normal-35.1-stage1。検証専用コードなし、AUTOMATIC_CLOUD_SYNC_ENABLED=falseと予約入口停止を公開JSで確認。公開確認はファイル取得のみ（アプリJS実行なし）、実同期/DB操作/端末キャッシュ操作なし。スマホの表示・SW更新確認は未実施。第2段階の解除は別承認待ち。この公開記録はローカル文書更新のみで追加pushなし。以下は準備・先行公開の履歴。
 
 - 最新候補：第1段階の通常版更新確認用（未公開）。6e09c73の通常版候補にAUTOMATIC_CLOUD_SYNC_ENABLED=falseを追加しscheduleCloudSyncの最初で停止。表示Ver.35.1 / JS35.1-stage1 / SW shochu-keep-ledger-v35-normal-35.1-stage1。起動・認証復元・online・visibility・編集後の自動予約は停止。手動復元/移行/取消など既存明示操作は変更していないため実機は表示確認だけ行う。比較/保存関数は維持。単体・来店分離/送信・隔離Edge（復帰イベント/タイマーなし、PWA更新、回帰）成功、JS例外/参照切れ0。DB操作・実同期・公開なし。第2段階の自動同期解除は実機確認後の別承認。以下の自動同期再開記述は先行候補の履歴。
 
