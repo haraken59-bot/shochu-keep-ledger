@@ -15,7 +15,7 @@ const REMAINING_UNDO_NOTE = "直前の残量変更を取り消し";
 const DAY = 24 * 60 * 60 * 1000;
 const PUBLIC_APP_URL = "https://haraken59-bot.github.io/shochu-keep-ledger/";
 // Stage 2: normal-release display confirmed; restore the existing automatic sync path.
-const AUTOMATIC_CLOUD_SYNC_ENABLED = true;
+const AUTOMATIC_CLOUD_SYNC_ENABLED = false;
 
 
 const demoBottles = [
