@@ -1,12 +1,12 @@
-const CACHE_NAME = "shochu-keep-ledger-v35-zero-sync-1";
+const CACHE_NAME = "shochu-keep-ledger-v35-zero-sync-auth1";
 const APP_FILES = ["./icons/icon-192-v20261011.png","./icons/icon-512-v20261011.png","./icons/icon-maskable-192-v20261011.png","./icons/icon-maskable-512-v20261011.png",
   "./",
   "./index.html",
   "./sync-zero.html",
-  "./baseline-core.js?v=35-zero-sync-1",
-  "./sync-zero-normal.js?v=35-zero-sync-1",
-  "./sync-zero-core.js?v=35-zero-sync-1",
-  "./sync-zero-ui.js?v=35-zero-sync-1",
+  "./baseline-core.js?v=35-zero-sync-auth1",
+  "./sync-zero-normal.js?v=35-zero-sync-auth1",
+  "./sync-zero-core.js?v=35-zero-sync-auth1",
+  "./sync-zero-ui.js?v=35-zero-sync-auth1",
   "./styles.css?v=34.0",
   "./supabase-config.js?v=22",
   "./baseline-core.js?v=35.0-baseline-1-auth1",
