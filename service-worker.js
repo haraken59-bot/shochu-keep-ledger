@@ -1,7 +1,12 @@
-const CACHE_NAME = "shochu-keep-ledger-v35-baseline-1-auth1";
+const CACHE_NAME = "shochu-keep-ledger-v35-zero-sync-1";
 const APP_FILES = ["./icons/icon-192-v20261011.png","./icons/icon-512-v20261011.png","./icons/icon-maskable-192-v20261011.png","./icons/icon-maskable-512-v20261011.png",
   "./",
   "./index.html",
+  "./sync-zero.html",
+  "./baseline-core.js?v=35-zero-sync-1",
+  "./sync-zero-normal.js?v=35-zero-sync-1",
+  "./sync-zero-core.js?v=35-zero-sync-1",
+  "./sync-zero-ui.js?v=35-zero-sync-1",
   "./styles.css?v=34.0",
   "./supabase-config.js?v=22",
   "./baseline-core.js?v=35.0-baseline-1-auth1",
@@ -57,14 +62,16 @@ self.addEventListener("fetch", (event) => {
     return;
   }
   if (event.request.mode === "navigate") {
+    const diagnosticPaths = ["./sync-zero.html", "./baseline-diagnostic.html"];
+    const pageKey = diagnosticPaths.find(path => new URL(path, self.location).pathname === new URL(event.request.url).pathname) || "./index.html";
     event.respondWith(
       fetch(event.request)
         .then((response) => {
           const copy = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put("./index.html", copy));
+          caches.open(CACHE_NAME).then((cache) => cache.put(pageKey, copy));
           return response;
         })
-        .catch(() => caches.match("./index.html"))
+        .catch(() => caches.match(pageKey))
     );
     return;
   }
