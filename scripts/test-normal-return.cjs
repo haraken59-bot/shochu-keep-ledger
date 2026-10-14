@@ -4,7 +4,7 @@ const server=http.createServer((req,res)=>{try{let p=new URL(req.url,'http://loc
 const c=await b.newContext(),p=await c.newPage(),errors=[],db=[];p.on('pageerror',e=>errors.push(e.message));
 await c.route('**/*',r=>{const u=new URL(r.request().url());if(u.origin===origin)return r.continue();if(u.hostname.endsWith('supabase.co'))db.push(u.pathname);return r.fulfill({status:200,contentType:'text/javascript',body:''});});
 await p.goto(origin);await p.waitForFunction(()=>!!navigator.serviceWorker.controller);await p.evaluate(()=>navigator.serviceWorker.ready);
-assert((await p.content()).includes('app.js?v=35.1-normal1'));assert(!(await p.content()).includes('baseline-display.js'));assert((await p.locator('body').innerText()).includes('Ver.35.1'));
+assert((await p.content()).includes('app.js?v=35.1-normal2'));assert(!(await p.content()).includes('baseline-display.js'));assert((await p.locator('body').innerText()).includes('Ver.35.1'));
 await c.setOffline(true);await p.reload();assert((await p.locator('body').innerText()).includes('Ver.35.1'));await c.setOffline(false);
 for(const name of ['sync-zero.html','baseline-diagnostic.html']){await p.goto(origin+'/'+name);assert((await p.locator('body').innerText()).includes('検証画面は終了しました'));assert.equal(await p.locator('script').count(),0);assert.equal(await p.locator('button').count(),0);}
 assert.deepEqual(errors,[]);assert.deepEqual(db,[]);console.log('PASS normal startup / offline / retired pages inert / JS errors0 / isolated DB requests0');

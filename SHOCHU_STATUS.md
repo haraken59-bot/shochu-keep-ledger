@@ -4,6 +4,17 @@
 
 ## 最新：通常画面・自動同期停止版の一時公開（2026-10-14）
 
+### 通常自動同期再開 normal2（利用者承認・公開準備）
+
+- Androidで停止版通常画面が正常と利用者確認。表示Ver.35.1を維持し、JS35.1-normal2 / SW shochu-keep-ledger-v35-normal-35.1-normal2へ識別更新。処理変更はAUTOMATIC_CLOUD_SYNC_ENABLED=trueのみ。同期本体/比較/来店分離/競合停止は不変。
+- 公開前実DBをSELECTのみで全行取得：2026-10-14T08:03:59.064771Z。5テーブル全利用者合計 stores7/bottles60/store_visits86/remaining_updates43/brand_labels3。公開除外の.codex-remote-attachments/normal2-audit/before.jsonへ保全。公開後と実機起動後の比較元。実データ/比較基準/DBスキーマの変更はしない。
+- 通常同期/来店分離/来店同期/保存判定7ケースと隔離ブラウザ回帰成功。実認証同期は未実行。実機は公開直後のDB差分報告まで開かない。
+- 緊急停止：スマホをオフライン→アプリ/タブを閉じる→停止フラグfalse＋新JS/SW識別子の停止版を再公開→配信確認。停止版efd7e83を参照するが古いキャッシュ名の単純再使用は避ける。遠隔即停止はできない。DB復元・基準変更は行わない。
+- スナップショット差分は保存結果の比較であり、同値書込みや途中で戻された変更のリクエスト数を証明しない。実機起動後はDB差分と確認可能なログを分けて報告する。
+
+- 公開確認完了：efd7e8345b4fa6605895c7406d6a2160fa23c92e、main/直下、Pages 38531704254 success。URL https://haraken59-bot.github.io/shochu-keep-ledger/?v=35.1-normal1 。HTML/JS/SW/旧専用HTML2件/manifestはHTTP200・コミット一致。初回は配信更新前の旧HTMLだったためPages完了後に再確認して一致。
+- 公開隔離ブラウザ（未ログイン）でVer.35.1、normal1 SWキャッシュ、旧専用URLの操作ボタン/スクリプトなし、JS例外0、Supabase要求0/書込み0を確認。ボタン未操作。実機認証済み環境は利用者表示確認待ち。自動同期フラグfalseのまま、解除は別承認。実データ・保存済み比較基準・DB変更なし。公開後の本追記はローカル記録。
+
 - 利用者承認により、以下の通常復帰準備から自動同期フラグだけfalseへ戻して一時公開する。表示Ver.35.1、JS 35.1-normal1、SW shochu-keep-ledger-v35-normal-35.1-normal1。通常同期解除は実機表示確認後の別承認。
 - scheduleCloudSyncは最初にreturnし、初期セッション復元/SIGNED_IN/online/visible/保存操作からタイマー・同期・DB書込みを開始しない。同期本体と比較関数は不変。通常の手動移行/復元/取り消し等の操作UIは残るため、実機は表示確認のみとし操作しない。
 - test-normal-paused、来店分離、来店同期、通常保存判定7ケース/排他が成功。隔離Edgeで通常表示・オフライン・専用終了案内・JSエラー0・DB要求0を確認。実ユーザーの認証/同期/DB/比較基準は操作していない。公開後のコミット/Pages/配信結果を後記する。
