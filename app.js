@@ -1,3 +1,6 @@
+// Keep the legacy local/sync key stable; formal name is a display/DB alias only.
+function hidakaStoreKey(name) { return name === "やきとり ひだか" ? "やきとり日高" : name; }
+function displayStoreName(name) { return name === "やきとり日高" ? "やきとり ひだか" : name; }
 const STORAGE_KEY = "shochu-keep-ledger-v1";
 const LABELS_KEY = "shochu-keep-ledger-label-images-v1";
 const STORE_LOCATIONS_KEY = "shochu-keep-ledger-store-locations-v1";
@@ -620,7 +623,7 @@ function renderCloudMigrationState() {
 async function supabaseData(query) {
   const { data, error } = await query;
   if (error) throw error;
-  return data;
+  return Array.isArray(data) ? data.map(row => row && typeof row.name === "string" ? { ...row, name: hidakaStoreKey(row.name) } : row) : data;
 }
 
 function dataUrlToImageFile(dataUrl) {
@@ -731,7 +734,7 @@ async function fetchCloudRestoreSnapshot() {
 }
 
 function bottleChangeLabel(bottle) {
-  return `${bottle.store}「${bottle.name}」`;
+  return `${displayStoreName(bottle.store)}「${bottle.name}」`;
 }
 
 function describeCloudChanges(snapshot) {
@@ -761,10 +764,10 @@ function describeCloudChanges(snapshot) {
   const localVisits = new Set(storeVisits.map((visit) => `${visit.store}\u0000${visit.visitedAt}`));
   const cloudVisits = new Set(snapshot.storeVisits.map((visit) => `${visit.store}\u0000${visit.visitedAt}`));
   snapshot.storeVisits.forEach((visit) => {
-    if (!localVisits.has(`${visit.store}\u0000${visit.visitedAt}`)) messages.push(`${visit.store}：来店日 ${visit.visitedAt} を追加`);
+    if (!localVisits.has(`${visit.store}\u0000${visit.visitedAt}`)) messages.push(`${displayStoreName(visit.store)}：来店日 ${visit.visitedAt} を追加`);
   });
   storeVisits.forEach((visit) => {
-    if (!cloudVisits.has(`${visit.store}\u0000${visit.visitedAt}`)) messages.push(`${visit.store}：来店日 ${visit.visitedAt} を削除`);
+    if (!cloudVisits.has(`${visit.store}\u0000${visit.visitedAt}`)) messages.push(`${displayStoreName(visit.store)}：来店日 ${visit.visitedAt} を削除`);
   });
 
   const localLocationStores = new Set(Object.keys(storeLocations));
@@ -772,14 +775,14 @@ function describeCloudChanges(snapshot) {
   Object.keys(snapshot.storeLocations).forEach((store) => {
     const localLocation = storeLocations[store];
     const cloudLocation = snapshot.storeLocations[store];
-    if (!localLocation) messages.push(`${store}：店舗位置を追加`);
+    if (!localLocation) messages.push(`${displayStoreName(store)}：店舗位置を追加`);
     else if (JSON.stringify(comparableLocation(localLocation.latitude, localLocation.longitude))
       !== JSON.stringify(comparableLocation(cloudLocation.latitude, cloudLocation.longitude))) {
-      messages.push(`${store}：店舗位置を更新`);
+      messages.push(`${displayStoreName(store)}：店舗位置を更新`);
     }
   });
   localLocationStores.forEach((store) => {
-    if (!cloudLocationStores.has(store)) messages.push(`${store}：店舗位置を削除`);
+    if (!cloudLocationStores.has(store)) messages.push(`${displayStoreName(store)}：店舗位置を削除`);
   });
 
   const settingStores = new Set([...Object.keys(storeSettings), ...Object.keys(snapshot.storeSettings || {})]);
@@ -787,7 +790,7 @@ function describeCloudChanges(snapshot) {
     const localDays = closedWeekdaysForStore(store);
     const cloudDays = normalizeClosedWeekdays(snapshot.storeSettings?.[store]?.closedWeekdays);
     if (JSON.stringify(localDays) !== JSON.stringify(cloudDays)) {
-      messages.push(`${store}：基本定休日を更新`);
+      messages.push(`${displayStoreName(store)}：基本定休日を更新`);
     }
   });
 
@@ -2252,7 +2255,7 @@ function renderNearbyStoreCandidates(position) {
     setLocationStatus(
       els.nearbyStoresStatus,
       nearest
-        ? `1km以内に登録店がありません。最寄りは「${nearest.store}」（約${formatDistance(nearest.distance)}）です。`
+        ? `1km以内に登録店がありません。最寄りは「${displayStoreName(nearest.store)}」（約${formatDistance(nearest.distance)}）です。`
         : "場所を登録した店舗がありません。店舗履歴から現在地を登録できます。",
       true,
     );
@@ -2266,7 +2269,7 @@ function renderNearbyStoreCandidates(position) {
     const nameGroup = document.createElement("span");
     nameGroup.className = "nearby-store-name";
     const name = document.createElement("strong");
-    name.textContent = store;
+    name.textContent = displayStoreName(store);
     nameGroup.append(name);
     if (isStoreBasicClosedToday(store)) {
       const closedBadge = document.createElement("span");
@@ -2460,7 +2463,7 @@ function render() {
     heading.className = "store-group-heading";
     const headingName = document.createElement("span");
     headingName.className = "store-group-name";
-    headingName.textContent = store;
+    headingName.textContent = displayStoreName(store);
     const headingVisit = document.createElement("small");
     headingVisit.className = "store-last-visit";
     headingVisit.textContent = storeVisitText(store);
@@ -2589,7 +2592,7 @@ function moveCalendarMonth(offset) {
 function renderQuickVisit(store) {
   currentQuickStore = store;
   const latestVisit = latestStoreVisitDate(store);
-  els.quickVisitTitle.textContent = store;
+  els.quickVisitTitle.textContent = displayStoreName(store);
   els.quickVisitLast.textContent = latestVisit
     ? `最終来店 ${formatDate(latestVisit)}・${storeVisitText(store)}`
     : "来店日の記録はありません";
@@ -2694,7 +2697,7 @@ function openStoreHistory(store) {
     .filter((bottle) => bottle.store === store)
     .sort((a, b) => new Date(a.startedAt) - new Date(b.startedAt));
   const history = [...historyByDate].reverse();
-  els.historyStore.textContent = store;
+  els.historyStore.textContent = displayStoreName(store);
   els.historyList.replaceChildren();
   calendarMonth = null;
   renderStoreVisitCalendar(store);
@@ -2974,7 +2977,7 @@ function openDetail(id) {
   selectedId = id;
   const bottle = bottles.find((item) => item.id === id);
   if (!bottle) return;
-  els.detailStore.textContent = bottle.store;
+  els.detailStore.textContent = displayStoreName(bottle.store);
   els.detailName.textContent = `${bottle.name}（${bottle.keepNumber}回目）`;
   els.detailStarted.textContent = formatDate(bottle.startedAt);
   els.detailLastVisited.textContent = formatDate(latestStoreVisitDate(bottle.store));
@@ -3043,13 +3046,13 @@ function renderOptions(select, values, placeholder, newLabel, formatLabel = (val
 
 function renderStoreOptions() {
   const stores = knownStoreNames().sort((a, b) => a.localeCompare(b, "ja"));
-  renderOptions(els.storeSelect, stores, "店名を選択してください", "＋ 新しい店名を入力");
-  renderOptions(els.pastStoreSelect, stores, "店名を選択してください", "＋ 新しい店名を入力");
-  renderOptions(els.historyEditStoreSelect, stores, "店名を選択してください", "＋ 新しい店名を入力");
+  renderOptions(els.storeSelect, stores, "店名を選択してください", "＋ 新しい店名を入力", displayStoreName);
+  renderOptions(els.pastStoreSelect, stores, "店名を選択してください", "＋ 新しい店名を入力", displayStoreName);
+  renderOptions(els.historyEditStoreSelect, stores, "店名を選択してください", "＋ 新しい店名を入力", displayStoreName);
 }
 
 function selectedStore(select, newInput) {
-  return normalizeTextValue(select.value === "__new__" ? newInput.value : select.value);
+  return hidakaStoreKey(normalizeTextValue(select.value === "__new__" ? newInput.value : select.value));
 }
 
 function selectedBrand(select, newInput) {
@@ -3625,7 +3628,8 @@ function setInputMode(select, newInput) {
 
 function selectionValue(formData, selectName, newName) {
   const selected = formData.get(selectName);
-  return normalizeTextValue(selected === "__new__" ? formData.get(newName) : selected);
+  const value = normalizeTextValue(selected === "__new__" ? formData.get(newName) : selected);
+  return /store/i.test(selectName) ? hidakaStoreKey(value) : value;
 }
 
 async function chooseNearbyStore() {
@@ -3652,7 +3656,7 @@ async function chooseNearbyStore() {
     if (nearest.distance > 1000) {
       setLocationStatus(
         els.nearbyStoreStatus,
-        `1km以内に登録済み店舗がありません。最寄りは「${nearest.store}」（${formatDistance(nearest.distance)}）です。`,
+        `1km以内に登録済み店舗がありません。最寄りは「${displayStoreName(nearest.store)}」（${formatDistance(nearest.distance)}）です。`,
         true,
       );
       return;
@@ -3664,7 +3668,7 @@ async function chooseNearbyStore() {
     updatePreviousKeepInfo();
     setLocationStatus(
       els.nearbyStoreStatus,
-      `「${nearest.store}」を選びました（現在地から約${formatDistance(nearest.distance)}）。`,
+      `「${displayStoreName(nearest.store)}」を選びました（現在地から約${formatDistance(nearest.distance)}）。`,
     );
   } catch (error) {
     setLocationStatus(els.nearbyStoreStatus, error.message, true);
