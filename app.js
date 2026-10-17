@@ -2693,6 +2693,7 @@ function openQuickVisit(store) {
 }
 
 function openStoreHistory(store) {
+  void loadStoreNavigation(store);
   const historyByDate = bottles
     .filter((bottle) => bottle.store === store)
     .sort((a, b) => new Date(a.startedAt) - new Date(b.startedAt));
@@ -4282,3 +4283,33 @@ if ("serviceWorker" in navigator) {
     }
   });
 }
+
+// Separate cloud-only metadata; never participates in bottle/offline sync snapshots.
+let navigationStore=null,navigationLoad=0;
+async function loadStoreNavigation(store){
+ const serial=++navigationLoad,form=document.getElementById('store-navigation-form'),message=document.getElementById('store-navigation-status');
+ navigationStore=null;form.reset();form.querySelector('button').disabled=true;
+ const owner=authSession?.user?.id;
+ if(!owner||!supabaseClient){message.textContent='ログイン後に店舗情報を設定できます。';return;}
+ message.textContent='店舗情報を確認しています…';
+ try{
+  const {data,error}=await supabaseClient.rpc('get_navi_store_catalog');if(error)throw error;
+  if(serial!==navigationLoad||authSession?.user?.id!==owner)return;
+  const matches=(data||[]).filter(s=>!s.is_test&&hidakaStoreKey(s.name)===hidakaStoreKey(store));
+  if(matches.length!==1)throw Error('ambiguous');navigationStore={...matches[0],owner};
+  form.querySelectorAll('[name=genre]').forEach(el=>el.checked=navigationStore.genres.includes(el.value));form.elements.usage.value=navigationStore.usage_mode||'';
+  form.querySelector('button').disabled=false;message.textContent='共通DBの店舗情報です。未設定の項目は推測しません。';
+ }catch{message.textContent='店舗を一意に確認できません。同期済みの本番店舗で確認してください。';}
+}
+document.getElementById('store-navigation-form').addEventListener('submit',async event=>{
+ event.preventDefault();const form=event.currentTarget,message=document.getElementById('store-navigation-status'),target=navigationStore;
+ if(!target||authSession?.user?.id!==target.owner)return;
+ form.querySelector('button').disabled=true;
+ try{
+  const genres=[...form.querySelectorAll('[name=genre]:checked')].map(e=>e.value),usage=form.elements.usage.value||null;
+  const {error}=await supabaseClient.rpc('set_store_navigation_settings',{p_store_id:target.id,p_genres:genres,p_usage_mode:usage,p_expected_genres:target.genres,p_expected_usage_mode:target.usage_mode});if(error)throw error;
+  if(authSession?.user?.id!==target.owner||navigationStore!==target)return;
+  navigationStore={...target,genres,usage_mode:usage};message.textContent='店舗情報を共通DBへ保存しました。ナビで履歴を再取得すると反映されます。';
+ }catch{message.textContent='保存を確認できません。店舗画面を開き直して確認してください。';}
+ finally{if(navigationStore?.owner===authSession?.user?.id)form.querySelector('button').disabled=false;}
+});

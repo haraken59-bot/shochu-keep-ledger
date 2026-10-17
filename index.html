@@ -502,7 +502,11 @@
           <p id="store-closed-days-status" class="form-status" aria-live="polite"></p>
         </form>
 
-        <h3 class="history-section-title">来店履歴</h3>
+        <form id="store-navigation-form" class="store-closed-days-form">
+<fieldset><legend>ナビで使う店舗情報</legend><div class="weekday-options"><label><input type="checkbox" name="genre" value="焼き鳥"><span>焼き鳥</span></label><label><input type="checkbox" name="genre" value="居酒屋"><span>居酒屋</span></label><label><input type="checkbox" name="genre" value="焼肉"><span>焼肉</span></label><label><input type="checkbox" name="genre" value="中華"><span>中華</span></label><label><input type="checkbox" name="genre" value="和食"><span>和食</span></label><label><input type="checkbox" name="genre" value="スナック"><span>スナック</span></label><label><input type="checkbox" name="genre" value="バー"><span>バー</span></label><label><input type="checkbox" name="genre" value="その他"><span>その他</span></label></div>
+<label>利用モード<select name="usage"><option value="">未設定</option><option value="both">食事・飲み両方</option><option value="eat">食事のみ</option><option value="drink">飲みのみ</option></select></label></fieldset>
+<button type="submit" class="secondary-button" disabled>店舗情報を共通DBへ保存</button><p id="store-navigation-status" role="status"></p></form>
+<h3 class="history-section-title">来店履歴</h3>
         <button id="store-visit-today" class="secondary-button visit-today-button" type="button">今日来店した</button>
         <section class="visit-calendar" aria-label="来店カレンダー">
           <div class="calendar-toolbar">
@@ -595,6 +599,6 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="vendor/tesseract/tesseract.min.js?v=7.0.0"></script>
     <script src="supabase-config.js?v=22"></script>
-    <script src="app.js?v=35.1-name-20261015"></script>
+    <script src="app.js?v=35.1-store-20261018"></script>
   </body>
 </html>
